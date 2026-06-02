@@ -1,4 +1,14 @@
-# dotnet_study 프로젝트
+# ClaudeCodeStudy 프로젝트
+
+## 프로젝트 개요
+
+**목표:** ProudNet과 같은 고성능 서버 라이브러리 개발 (.NET 10 기반)
+
+**디렉토리 구조:**
+- `Server/Core/` — 실제 구현 코드 (서버 로직, 네트워크 처리 등)
+- `Server/Interface/` — 인터페이스 정의 코드 (공개 API 계약)
+
+**원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 ## 하네스: 종합 코드 리뷰
 
