@@ -8,8 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <Folder Include="Core\" />
-      <Folder Include="Interface\" />
+        <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
     </ItemGroup>
 
 </Project>

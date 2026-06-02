@@ -1,47 +1,42 @@
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
+using ServerLib.Core;
+using ServerLib.Core.Transport;
+using ServerLib.Interface;
 
 const int Port = 9000;
 
-var listener = new TcpListener(IPAddress.Any, Port);
-listener.Start();
-Console.WriteLine($"Echo server listening on port {Port}...");
+var metrics = new ServerMetrics();
+var listener = new SocketPipelineListener();
 
-while (true)
+listener.OnClientConnected = session =>
 {
-    var client = await listener.AcceptTcpClientAsync();
-    _ = HandleClientAsync(client);
-}
+    metrics.OnClientConnected();
+    Console.WriteLine($"[+] {session.RemoteEndPoint}  (total: {metrics.ConnectedCount})");
+    return ValueTask.CompletedTask;
+};
 
-static async Task HandleClientAsync(TcpClient client)
+listener.OnClientDisconnected = session =>
 {
-    var endpoint = client.Client.RemoteEndPoint;
-    Console.WriteLine($"[+] Connected: {endpoint}");
+    metrics.OnClientDisconnected();
+    Console.WriteLine($"[-] {session.RemoteEndPoint}  (total: {metrics.ConnectedCount})");
+    return ValueTask.CompletedTask;
+};
 
-    await using var stream = client.GetStream();
-    var buffer = new byte[4096];
+listener.OnReceived = async (session, data) =>
+{
+    metrics.OnPacketReceived();
+    metrics.OnBytesReceived(data.Length);
 
-    try
-    {
-        while (true)
-        {
-            int bytesRead = await stream.ReadAsync(buffer);
-            if (bytesRead == 0) break;
+    var message = Encoding.UTF8.GetString(data.Span).TrimEnd();
+    Console.WriteLine($"[{session.RemoteEndPoint}] recv={data.Length}B  \"{message}\"");
 
-            var message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-            Console.WriteLine($"[{endpoint}] Received: {message.TrimEnd()}");
+    await session.SendAsync(data);
+    metrics.OnBytesSent(data.Length);
+};
 
-            await stream.WriteAsync(buffer.AsMemory(0, bytesRead));
-        }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[{endpoint}] Error: {ex.Message}");
-    }
-    finally
-    {
-        client.Close();
-        Console.WriteLine($"[-] Disconnected: {endpoint}");
-    }
-}
+listener.Start(Port);
+Console.WriteLine($"[ServerLib] SocketPipelineListener on port {Port}. Press Enter to stop.");
+Console.ReadLine();
+
+listener.Stop();
+Console.WriteLine($"Server stopped. Total packets: {metrics.TotalPacketsReceived}");

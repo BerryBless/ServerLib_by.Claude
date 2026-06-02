@@ -1,25 +1,49 @@
-using System.Net.Sockets;
 using System.Text;
+using ServerLib.Core.Transport;
 
 const string Host = "127.0.0.1";
 const int Port = 9000;
 
-using var client = new TcpClient();
-await client.ConnectAsync(Host, Port);
-Console.WriteLine($"Connected to {Host}:{Port}. Type messages (empty line to quit):");
+var receivedCount = 0;
+await using var connection = new SocketPipelineClient();
 
-await using var stream = client.GetStream();
-var receiveBuffer = new byte[4096];
+connection.OnConnected = () =>
+{
+    Console.WriteLine($"[ServerLib] Connected to {Host}:{Port}");
+    return ValueTask.CompletedTask;
+};
 
-while (true)
+connection.OnDisconnected = () =>
+{
+    Console.WriteLine($"Disconnected. Total received: {receivedCount}");
+    return ValueTask.CompletedTask;
+};
+
+connection.OnReceived = data =>
+{
+    Interlocked.Increment(ref receivedCount);
+    var message = Encoding.UTF8.GetString(data.Span).TrimEnd();
+    Console.WriteLine($"[Echo #{receivedCount}] recv={data.Length}B  \"{message}\"");
+    return ValueTask.CompletedTask;
+};
+
+await connection.ConnectAsync(Host, Port);
+
+// 자동 메시지 3개 전송
+string[] autoMessages = ["Hello", "World", "Echo Test"];
+foreach (var msg in autoMessages)
+{
+    var data = Encoding.UTF8.GetBytes(msg + "\n");
+    await connection.SendAsync(data);
+    await Task.Delay(100);
+}
+
+// 이후 대화형 모드
+Console.WriteLine("\nType messages (empty line to quit):");
+while (connection.IsConnected)
 {
     var input = Console.ReadLine();
     if (string.IsNullOrEmpty(input)) break;
 
-    var data = Encoding.UTF8.GetBytes(input + "\n");
-    await stream.WriteAsync(data);
-
-    int bytesRead = await stream.ReadAsync(receiveBuffer);
-    var response = Encoding.UTF8.GetString(receiveBuffer, 0, bytesRead);
-    Console.WriteLine($"Echo: {response.TrimEnd()}");
+    await connection.SendAsync(Encoding.UTF8.GetBytes(input + "\n"));
 }

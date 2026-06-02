@@ -4,11 +4,13 @@
 
 **목표:** ProudNet과 같은 고성능 서버 라이브러리 개발 (.NET 10 기반)
 
-**디렉토리 구조:**
-- `Server/Core/` — 실제 구현 코드 (서버 로직, 네트워크 처리 등)
-- `Server/Interface/` — 인터페이스 정의 코드 (공개 API 계약)
-
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
+
+**예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
+- `Server/Program.cs` — `TcpServerListener` 사용 예제: 접속 수 추적, 에코 처리
+- `Client/Program.cs` — `TcpServerConnection` 사용 예제: 자동 메시지 3개 전송 후 대화형 모드
+
+새 기능을 추가할 때 Program.cs의 예제도 함께 업데이트할 것.
 
 ## 하네스: 종합 코드 리뷰
 

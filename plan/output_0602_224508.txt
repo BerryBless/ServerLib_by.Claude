@@ -1,0 +1,115 @@
+========================================
+ProudNet-like Network Library Build Plan
+Generated: 2026-06-02 22:45:08
+========================================
+
+[PLAN] 4단계 구현 시작
+  1단계: 아키텍처 분리 (ServerLib, SocketPipeline, RUDP, RPC)
+  2단계: Zero-Allocation (ArrayPool, PipeReader, PacketPool)
+  3단계: Lock-Free 동시성 (Interlocked, Channel<T>)
+  4단계: Benchmark + LoadTest
+
+========================================
+[STEP 1] ServerLib 프로젝트 생성
+========================================
+생성된 파일:
+  ServerLib/ServerLib.csproj            (net10.0, AllowUnsafeBlocks)
+  ServerLib/Interface/ISession.cs       (SessionId, RemoteEndPoint, ConnectedAt, OnReceived, SendAsync)
+  ServerLib/Interface/IServerListener.cs (IsRunning, OnClientConnected, OnReceived, Start/Stop)
+  ServerLib/Interface/IPacketSerializer.cs (Serialize<T>/Deserialize<T>, Zero-copy Span 기반)
+  ServerLib/Interface/IRpcHandler.cs    (DispatchAsync)
+  ServerLib/Core/Transport/SocketPipelineListener.cs (SocketAsyncEventArgs + Socket.AcceptAsync)
+  ServerLib/Core/Transport/SocketPipelineSession.cs  (PipeReader Zero-copy 수신 루프)
+  ServerLib/Core/Transport/UdpHolePuncher.cs         (UDP 홀펀칭 구현)
+  Rpc.Generator/RpcAttribute.cs         ([RpcService], [RpcMethod] 어트리뷰트)
+  Rpc.Generator/RpcSourceGenerator.cs   (IIncrementalGenerator Source Generator)
+
+========================================
+[STEP 2] Zero-Allocation 핵심 구현
+========================================
+생성된 파일:
+  ServerLib/Core/Memory/PacketPool.cs   (ArrayPool 기반 헤더/버퍼 풀, TryParseHeader/WriteHeader)
+
+핵심 패턴:
+  - PipeWriter.GetMemory() → Socket.ReceiveAsync() → PipeWriter.Advance() (Zero-copy 수신)
+  - ReadOnlySequence<byte>.IsSingleSegment → First 슬라이스 직접 전달 (복사 없음)
+  - ArrayPool<byte>.Shared.Rent/Return (new byte[] 완전 배제)
+  - PacketPool.WriteHeader() → Span<byte> 직접 기록
+
+========================================
+[STEP 3] Lock-Free 동시성 구현
+========================================
+생성된 파일:
+  ServerLib/Core/ServerMetrics.cs       (Interlocked.Increment/Decrement/Add/Read 전용)
+  ServerLib/Core/Rudp/RudpSendQueue.cs  (Channel<RudpSegment>.CreateBounded, SingleReader=true)
+  ServerLib/Core/Rudp/RudpRecvWindow.cs (슬라이딩 수신 윈도우, Interlocked 상태 관리)
+  ServerLib/Core/Rudp/RudpChannel.cs    (UDP + 시퀀스 번호 + ACK 비트맵)
+  ServerLib/Core/Rpc/RpcDispatcher.cs   (배열 인덱싱 O(1) 룩업, Dictionary 배제)
+
+========================================
+[STEP 4] Benchmark + LoadTest
+========================================
+생성된 파일:
+  Benchmark/Benchmark.csproj            (BenchmarkDotNet 0.14.0)
+  Benchmark/PacketSerializerBenchmark.cs ([MemoryDiagnoser] new byte[] vs ArrayPool 비교)
+  Benchmark/SessionSendBenchmark.cs     (SendAsync 128B hot path 측정)
+  Benchmark/Program.cs                  (BenchmarkSwitcher.FromAssembly)
+  LoadTest/LoadTest.csproj
+  LoadTest/DummyClient.cs               (Parallel.ForEachAsync, ArrayPool 패킷 버퍼)
+  LoadTest/LoadMonitor.cs               (5초 주기 Connections/TPS 콘솔 출력)
+  LoadTest/Program.cs                   (CLI args: host, port, clients, duration)
+
+========================================
+[BUILD RESULT] dotnet build ClaudeCodeStudy.sln
+========================================
+  Rpc.Generator  -> netstandard2.0  OK
+  Client         -> net10.0         OK
+  ServerLib      -> net10.0         OK
+  LoadTest       -> net10.0         OK
+  Benchmark      -> net10.0         OK
+  Server         -> net10.0         OK
+
+빌드했습니다.
+    경고 0개
+    오류 0개
+    경과 시간: 00:00:01.66
+
+========================================
+[TEST RESULT] dotnet test _workspace/TddSession.csproj
+========================================
+  통과!  - 실패: 0, 통과: 10, 건너뜀: 0, 전체: 10
+  기간: 24 ms - TddSession.dll (net10.0)
+
+  Session GC 억제 테스트 10개 전체 통과:
+  - SessionId 자동 발급 (Guid.NewGuid)
+  - ConnectedAt 생성 시각 설정
+  - RemoteEndPoint 노출 (null 허용)
+  - SendAsync ValueTask 반환
+  - DisposeAsync ArrayPool 반납 보장
+  - Dispose 후 ObjectDisposedException
+  - OnReceived ReadOnlyMemory 슬라이스 전달
+  - OnDisconnected 콜백 호출
+
+========================================
+[SUMMARY] 프로젝트 구조
+========================================
+ClaudeCodeStudy/
+├── Server/Core/Interface/        기존 TCP 에코 서버 (TcpServerListener)
+├── Client/Core/Interface/        기존 TCP 에코 클라이언트 (TcpServerConnection)
+├── ServerLib/                    고성능 라이브러리 (신규)
+│   ├── Interface/                ISession, IServerListener, IPacketSerializer, IRpcHandler
+│   └── Core/
+│       ├── Transport/            SocketPipelineListener, SocketPipelineSession, UdpHolePuncher
+│       ├── Rudp/                 RudpChannel, RudpSendQueue, RudpRecvWindow
+│       ├── Rpc/                  RpcDispatcher
+│       └── Memory/               PacketPool
+├── Rpc.Generator/                Source Generator (IIncrementalGenerator)
+├── Benchmark/                    BenchmarkDotNet 성능 측정
+├── LoadTest/                     멀티스레드 부하 테스트 클라이언트
+└── _workspace/                   TDD 사이클 (10/10 테스트 통과)
+
+실행 방법:
+  서버:        dotnet run --project Server
+  클라이언트:  dotnet run --project Client
+  벤치마크:    dotnet run --project Benchmark -c Release
+  부하테스트:  dotnet run --project LoadTest -- 127.0.0.1 9000 100 60
