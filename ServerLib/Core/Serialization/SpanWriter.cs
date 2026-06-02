@@ -104,6 +104,8 @@ public ref struct SpanWriter
     public void WriteString(string value)
     {
         int byteCount = Encoding.UTF8.GetByteCount(value);
+        if (byteCount > ushort.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(value), byteCount, "UTF-8 인코딩 바이트 길이가 65535를 초과합니다.");
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)byteCount);
         _position += 2;
         Encoding.UTF8.GetBytes(value, _buffer.Slice(_position, byteCount));

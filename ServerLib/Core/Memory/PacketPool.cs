@@ -57,6 +57,8 @@ public static class PacketPool
     // 헤더 기록: Span에 직접 쓰기 (Zero-copy)
     public static void WriteHeader(Span<byte> destination, ushort packetId, int bodyLength)
     {
+        if (bodyLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(bodyLength), bodyLength, "본문 길이는 음수일 수 없습니다.");
         destination[0] = (byte)(packetId & 0xFF);
         destination[1] = (byte)(packetId >> 8);
         destination[2] = (byte)(bodyLength & 0xFF);
