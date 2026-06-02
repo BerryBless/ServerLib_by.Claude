@@ -50,6 +50,9 @@ public sealed class BinaryPacketSerializer : IPacketSerializer
     /// </remarks>
     public T Deserialize<T>(ReadOnlySpan<byte> source) where T : IPacket, new()
     {
+        if (source.Length < PacketPool.HeaderSize)
+            throw new ArgumentException(
+                $"버퍼 길이({source.Length})가 헤더 크기({PacketPool.HeaderSize})보다 작습니다.", nameof(source));
         var reader = new SpanReader(source.Slice(PacketPool.HeaderSize));
         var packet = new T();
         packet.Deserialize(ref reader);
