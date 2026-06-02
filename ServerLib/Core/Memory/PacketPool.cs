@@ -40,7 +40,7 @@ public static class PacketPool
         ArrayPool<byte>.Shared.Return(buffer);
 
     // 패킷 헤더 파싱: 4바이트 [PacketId(2) | BodyLength(2)]
-    public static readonly int HeaderSize = 4;
+    public const int HeaderSize = 4;
 
     public static bool TryParseHeader(ReadOnlySpan<byte> data, out ushort packetId, out int bodyLength)
     {
