@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using Microsoft.Extensions.ObjectPool;
 
 namespace ServerLib.Core.Memory;
@@ -49,8 +50,8 @@ public static class PacketPool
             bodyLength = 0;
             return false;
         }
-        packetId = (ushort)(data[0] | (data[1] << 8));
-        bodyLength = data[2] | (data[3] << 8);
+        packetId = BinaryPrimitives.ReadUInt16LittleEndian(data);
+        bodyLength = BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(2));
         return true;
     }
 
@@ -59,9 +60,7 @@ public static class PacketPool
     {
         if ((uint)bodyLength > ushort.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(bodyLength), bodyLength, "본문 길이는 0~65535 범위여야 합니다.");
-        destination[0] = (byte)(packetId & 0xFF);
-        destination[1] = (byte)(packetId >> 8);
-        destination[2] = (byte)(bodyLength & 0xFF);
-        destination[3] = (byte)(bodyLength >> 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination, packetId);
+        BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(2), (ushort)bodyLength);
     }
 }

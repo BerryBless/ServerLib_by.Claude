@@ -31,10 +31,14 @@ public sealed class BinaryPacketSerializer : IPacketSerializer
     public int Serialize<T>(T packet, Span<byte> destination) where T : IPacket
     {
         int bodySize = packet.GetBodySize();
+        int required = PacketPool.HeaderSize + bodySize;
+        if (destination.Length < required)
+            throw new ArgumentException(
+                $"버퍼 길이({destination.Length})가 필요 크기({required})보다 작습니다.", nameof(destination));
         PacketPool.WriteHeader(destination, packet.PacketId, bodySize);
         var writer = new SpanWriter(destination.Slice(PacketPool.HeaderSize, bodySize));
         packet.Serialize(ref writer);
-        return PacketPool.HeaderSize + bodySize;
+        return required;
     }
 
     /// <summary>
