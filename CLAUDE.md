@@ -12,6 +12,39 @@
 
 새 기능을 추가할 때 Program.cs의 예제도 함께 업데이트할 것.
 
+## 인터페이스 및 API 문서화(주석) 규칙
+
+모든 인터페이스, public 클래스의 메서드, 대리자(Delegate), RPC 정의 코드를 생성하거나 수정할 때는 반드시 표준 XML 문서 주석(C# `///`)을 매우 상세히 작성해야 한다. 단순 기능 설명을 넘어 **고성능 시스템 프로그래밍 관점의 제약 조건**을 주석에 반드시 포함할 것.
+
+### 주석 필수 포함 항목 (`<remarks>` 활용)
+
+- **Thread Safety:** `Thread-safe` 또는 `Not Thread-safe` 명시. 콜백이면 어느 스레드 컨텍스트(I/O Thread, 호출 스레드 등)에서 실행되는지 명시.
+- **Memory Allocation:** 힙 할당 발생 여부(`Zero-allocation guaranteed` 혹은 내부 할당량 명시). `ReadOnlySpan<byte>` / `ReadOnlyMemory<byte>` 버퍼의 **소유권(Ownership)과 생명주기** 명시.
+- **Blocking 여부:** 즉시 반환인지, 동기 블로킹인지, 비동기(Non-blocking)인지 명시.
+
+### 이상적인 주석 예시
+
+```csharp
+/// <summary>수신된 로우 패킷 버퍼를 역직렬화하여 내부 이벤트 파이프라인으로 라우팅합니다.</summary>
+/// <param name="sessionId">패킷을 송신한 클라이언트 세션의 고유 식별자</param>
+/// <param name="packetBuffer">수신된 원시 바이트 데이터 세그먼트</param>
+/// <returns>패킷 라우팅 및 처리 성공 여부</returns>
+/// <exception cref="InvalidPacketException">패킷 헤더가 손상되었거나 프로토콜 구조와 맞지 않을 때</exception>
+/// <remarks>
+/// <b>[성능 및 동시성 제약 조건]</b>
+/// <list type="bullet">
+/// <item><description><b>Thread Context:</b> 고성능 네트워크 I/O 스레드 풀에서 직접 호출됩니다.
+/// 내부에서 동기 블로킹(DB, File I/O)을 수행하면 전체 수신 루프가 정지됩니다.</description></item>
+/// <item><description><b>Memory Policy:</b> <paramref name="packetBuffer"/> 소유권은 메서드 실행 동안만 유효합니다.
+/// 반환 후에도 참조하려면 복사본을 생성해야 합니다.</description></item>
+/// <item><description><b>Concurrency:</b> Thread-safe. 내부적으로 ConcurrentQueue 및 Interlocked로 락 경합을 최소화합니다.</description></item>
+/// </list>
+/// </remarks>
+bool OnPacketReceived(long sessionId, ReadOnlySpan<byte> packetBuffer);
+```
+
+---
+
 ## 하네스: 종합 코드 리뷰
 
 **목표:** 아키텍처·보안·성능·스타일 4개 에이전트가 병렬로 코드를 감사하고 단일 리포트로 통합한다.
