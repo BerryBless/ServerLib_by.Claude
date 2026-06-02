@@ -7,10 +7,23 @@
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
-- `Server/Program.cs` — `TcpServerListener` 사용 예제: 접속 수 추적, 에코 처리
-- `Client/Program.cs` — `TcpServerConnection` 사용 예제: 자동 메시지 3개 전송 후 대화형 모드
+- `Server/Program.cs` — `SocketPipelineListener` 사용 예제: `int test` 변수, 증가(Id=3)/감소(Id=4) 패킷 처리, Interlocked 카운터
+- `Client/Program.cs` — `SocketPipelineClient` 사용 예제: 4개 스레드(0·1→증가×1000, 2·3→감소×1000) 동시 전송
 
 새 기능을 추가할 때 Program.cs의 예제도 함께 업데이트할 것.
+
+## 하네스: Git 자동 커밋 & 푸시 (Git Automator)
+
+**목표:** 보안 검증 → 한국어 커밋 메시지 자동 생성 → 안전한 커밋 & 푸시를 파이프라인으로 자동화한다.
+
+**트리거:** `/commitandpush`, 커밋해줘, 푸시해줘, 변경사항 올려줘, 깃 커밋 요청 시 `commitandpush` 스킬을 사용하라.
+
+**변경 이력:**
+| 날짜 | 변경 내용 | 대상 | 사유 |
+|------|----------|------|------|
+| 2026-06-03 | 초기 구성 | 전체 | Git 자동 커밋&푸시 파이프라인 구축 |
+
+---
 
 ## 플랜 문서화 규칙
 

@@ -1,16 +1,13 @@
-using System.Buffers;
 using ServerLib.Core;
 using ServerLib.Core.Memory;
-using ServerLib.Core.Serialization;
 using ServerLib.Core.Serialization.Packets;
 using ServerLib.Core.Transport;
-using ServerLib.Interface;
 
 const int Port = 9000;
 
 var metrics = new ServerMetrics();
-var serializer = new BinaryPacketSerializer();
 var listener = new SocketPipelineListener();
+var test = 0;
 
 listener.OnClientConnected = session =>
 {
@@ -22,48 +19,32 @@ listener.OnClientConnected = session =>
 listener.OnClientDisconnected = session =>
 {
     metrics.OnClientDisconnected();
-    Console.WriteLine($"[-] {session.RemoteEndPoint}  (total: {metrics.ConnectedCount})");
+    Console.WriteLine($"[-] {session.RemoteEndPoint}  (total: {metrics.ConnectedCount})  test={Volatile.Read(ref test)}");
     return ValueTask.CompletedTask;
 };
 
-listener.OnReceived = async (session, data) =>
+listener.OnReceived = (session, data) =>
 {
-    metrics.OnPacketReceived();
-    metrics.OnBytesReceived(data.Length);
-
-    // 헤더에서 PacketId 읽어 라우팅
     if (!PacketPool.TryParseHeader(data.Span, out ushort packetId, out _))
-        return;
+        return ValueTask.CompletedTask;
 
-    if (packetId == EchoPacket.Id)
-    {
-        var packet = serializer.Deserialize<EchoPacket>(data.Span);
-        Console.WriteLine($"[{session.RemoteEndPoint}] Echo: \"{packet.Message}\"");
+    metrics.OnPacketReceived();
 
-        // 동일 패킷을 직렬화하여 에코 응답
-        int totalSize = PacketPool.HeaderSize + packet.GetBodySize();
-        var rented = ArrayPool<byte>.Shared.Rent(totalSize);
-        try
-        {
-            int written = serializer.Serialize(packet, rented);
-            await session.SendAsync(rented.AsMemory(0, written));
-            metrics.OnBytesSent(written);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
-    }
-    else if (packetId == ChatPacket.Id)
-    {
-        var packet = serializer.Deserialize<ChatPacket>(data.Span);
-        Console.WriteLine($"[{session.RemoteEndPoint}] Chat [{packet.Sender}]: {packet.Content}");
-    }
+    if (packetId == IncrementPacket.Id)
+        Interlocked.Increment(ref test);
+    else if (packetId == DecrementPacket.Id)
+        Interlocked.Decrement(ref test);
+
+    var total = metrics.TotalPacketsReceived;
+    if (total % 500 == 0)
+        Console.WriteLine($"  packets={total}  test={Volatile.Read(ref test)}");
+
+    return ValueTask.CompletedTask;
 };
 
 listener.Start(Port);
-Console.WriteLine($"[ServerLib] Echo server on port {Port}. Press Enter to stop.");
+Console.WriteLine($"[Server] port {Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}). Enter to stop.");
 Console.ReadLine();
 
 listener.Stop();
-Console.WriteLine($"Server stopped. Total packets: {metrics.TotalPacketsReceived}");
+Console.WriteLine($"종료  total={metrics.TotalPacketsReceived}  final test={test}");
