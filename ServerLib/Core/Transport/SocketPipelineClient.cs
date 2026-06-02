@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using ServerLib.Core.Memory;
 using ServerLib.Interface;
 
 namespace ServerLib.Core.Transport;
@@ -64,7 +65,7 @@ public sealed class SocketPipelineClient : IClientConnection
         }
     }
 
-    // Zero-copy: PipeReader → ReadOnlySequence<byte> → 콜백 슬라이스
+    // 패킷 프레이밍: 완전한 패킷 단위로 OnReceived 호출
     private async Task ReadPipeAsync(CancellationToken ct)
     {
         var reader = _pipe!.Reader;
@@ -74,30 +75,36 @@ public sealed class SocketPipelineClient : IClientConnection
             {
                 var result = await reader.ReadAsync(ct);
                 var buffer = result.Buffer;
+                var consumed = buffer.Start;
+                var examined = buffer.End;
 
-                if (OnReceived != null)
+                while (TryReadPacket(ref buffer, out var packet))
                 {
-                    if (buffer.IsSingleSegment)
+                    if (OnReceived != null)
                     {
-                        await OnReceived(buffer.First);
-                    }
-                    else
-                    {
-                        var length = (int)buffer.Length;
-                        var rented = ArrayPool<byte>.Shared.Rent(length);
-                        try
+                        if (packet.IsSingleSegment)
                         {
-                            buffer.CopyTo(rented);
-                            await OnReceived(rented.AsMemory(0, length));
+                            await OnReceived(packet.First);
                         }
-                        finally
+                        else
                         {
-                            ArrayPool<byte>.Shared.Return(rented);
+                            var length = (int)packet.Length;
+                            var rented = ArrayPool<byte>.Shared.Rent(length);
+                            try
+                            {
+                                packet.CopyTo(rented);
+                                await OnReceived(rented.AsMemory(0, length));
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(rented);
+                            }
                         }
                     }
+                    consumed = buffer.Start;
                 }
 
-                reader.AdvanceTo(buffer.End);
+                reader.AdvanceTo(consumed, examined);
                 if (result.IsCompleted) break;
             }
         }
@@ -108,6 +115,23 @@ public sealed class SocketPipelineClient : IClientConnection
             if (OnDisconnected != null)
                 await OnDisconnected();
         }
+    }
+
+    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
+    {
+        if (buffer.Length < PacketPool.HeaderSize) { packet = default; return false; }
+
+        Span<byte> headerBuf = stackalloc byte[PacketPool.HeaderSize];
+        buffer.Slice(0, PacketPool.HeaderSize).CopyTo(headerBuf);
+
+        if (!PacketPool.TryParseHeader(headerBuf, out _, out int bodyLength)) { packet = default; return false; }
+
+        int totalLength = PacketPool.HeaderSize + bodyLength;
+        if (buffer.Length < totalLength) { packet = default; return false; }
+
+        packet = buffer.Slice(0, totalLength);
+        buffer = buffer.Slice(totalLength);
+        return true;
     }
 
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)

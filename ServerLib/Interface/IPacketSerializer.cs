@@ -1,3 +1,5 @@
+using ServerLib.Core.Serialization;
+
 namespace ServerLib.Interface;
 
 /// <summary>
@@ -6,7 +8,7 @@ namespace ServerLib.Interface;
 /// 힙 할당 없이 Zero-copy 직렬화를 보장합니다.
 /// </summary>
 /// <remarks>
-/// <b>[설계 원칙]</b>
+/// <b>[패킷 구조]</b> 헤더 4바이트 [PacketId(2B) | BodyLength(2B)] + 본문 N바이트 (LittleEndian)
 /// <list type="bullet">
 /// <item><description>직렬화 결과를 새 <see cref="byte"/>[] 배열로 반환하지 않습니다. 호출자가 대여한 버퍼에 직접 기록합니다.</description></item>
 /// <item><description>역직렬화 시 소스 버퍼를 복사하지 않습니다. 버퍼를 직접 파싱합니다.</description></item>
@@ -18,10 +20,10 @@ public interface IPacketSerializer
     /// <summary>
     /// 패킷 객체를 직렬화하여 <paramref name="destination"/> 버퍼에 직접 기록합니다.
     /// </summary>
-    /// <typeparam name="T">직렬화할 패킷의 타입입니다.</typeparam>
+    /// <typeparam name="T">직렬화할 패킷의 타입입니다. <see cref="IPacket"/>을 구현해야 합니다.</typeparam>
     /// <param name="packet">직렬화할 패킷 인스턴스입니다.</param>
     /// <param name="destination">직렬화 결과가 기록될 대상 버퍼입니다. 충분한 크기를 사전에 확보해야 합니다.</param>
-    /// <returns>실제로 기록된 바이트 수입니다.</returns>
+    /// <returns>실제로 기록된 바이트 수(헤더 + 본문)입니다.</returns>
     /// <exception cref="ArgumentException"><paramref name="destination"/>의 크기가 직렬화 결과보다 작을 때 발생합니다.</exception>
     /// <remarks>
     /// <b>[Memory Allocation:]</b> Zero-allocation. 내부 임시 버퍼를 생성하지 않으며,
@@ -32,28 +34,27 @@ public interface IPacketSerializer
     /// <br/><br/>
     /// <b>[Blocking:]</b> Non-blocking. 동기 즉시 반환됩니다.
     /// </remarks>
-    int Serialize<T>(T packet, Span<byte> destination);
+    int Serialize<T>(T packet, Span<byte> destination) where T : IPacket;
 
     /// <summary>
     /// <paramref name="source"/> 버퍼를 역직렬화하여 패킷 객체를 반환합니다.
+    /// <paramref name="source"/>는 헤더를 포함한 전체 패킷이어야 합니다.
     /// </summary>
-    /// <typeparam name="T">역직렬화 대상 패킷의 타입입니다.</typeparam>
-    /// <param name="source">역직렬화할 원시 바이트 데이터입니다.</param>
+    /// <typeparam name="T">역직렬화 대상 패킷의 타입입니다. <see cref="IPacket"/>을 구현하고 기본 생성자가 있어야 합니다.</typeparam>
+    /// <param name="source">헤더 + 본문으로 구성된 전체 패킷 버퍼입니다.</param>
     /// <returns>역직렬화된 패킷 인스턴스입니다.</returns>
     /// <exception cref="InvalidOperationException">버퍼가 손상되었거나 <typeparamref name="T"/>와 구조가 맞지 않을 때 발생합니다.</exception>
     /// <remarks>
     /// <b>[Memory Policy:]</b> <paramref name="source"/>의 소유권은 호출자에게 있습니다.
-    /// 이 메서드 반환 후 <paramref name="source"/>가 해제되어도 반환된 패킷 객체에는 영향을 주어서는 안 됩니다.
-    /// 구현체는 필요한 경우 내부에서 복사본을 생성해야 합니다.
     /// <br/><br/>
-    /// <b>[Memory Allocation:]</b> 패킷 타입 <typeparamref name="T"/>가 참조 타입이면 힙 할당이 발생합니다.
-    /// hot path에서는 struct 기반 패킷 타입을 사용하여 할당을 제거하는 것을 권장합니다.
+    /// <b>[Memory Allocation:]</b> T가 class인 경우 <c>new T()</c>로 1회 힙 할당이 발생합니다.
+    /// T를 struct로 정의하면 Zero-allocation이 가능합니다.
     /// <br/><br/>
     /// <b>[Thread Safety:]</b> Thread-safe.
     /// <br/><br/>
     /// <b>[Blocking:]</b> Non-blocking.
     /// </remarks>
-    T Deserialize<T>(ReadOnlySpan<byte> source);
+    T Deserialize<T>(ReadOnlySpan<byte> source) where T : IPacket, new();
 
     /// <summary>
     /// 패킷 헤더를 파싱하여 패킷 전체 길이를 읽습니다.

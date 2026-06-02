@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using ServerLib.Core.Memory;
 using ServerLib.Interface;
 
 namespace ServerLib.Core.Transport;
@@ -60,7 +61,7 @@ public sealed class SocketPipelineSession : ISession
         }
     }
 
-    // Zero-copy: PipeReader → ReadOnlySequence<byte> → 콜백 슬라이스 (복사 없음)
+    // 패킷 프레이밍: 완전한 패킷 단위로 OnReceived 호출
     private async Task ReadPipeAsync(CancellationToken ct)
     {
         var reader = _pipe.Reader;
@@ -70,10 +71,17 @@ public sealed class SocketPipelineSession : ISession
             {
                 var result = await reader.ReadAsync(ct);
                 var buffer = result.Buffer;
+                var consumed = buffer.Start;
+                var examined = buffer.End;
 
-                await ProcessBufferAsync(buffer);
+                while (TryReadPacket(ref buffer, out var packet))
+                {
+                    await DispatchPacketAsync(packet);
+                    consumed = buffer.Start;
+                }
 
-                reader.AdvanceTo(buffer.End);
+                // consumed: 처리 완료된 위치, examined: 검사한 끝까지 (더 많은 데이터 대기)
+                reader.AdvanceTo(consumed, examined);
 
                 if (result.IsCompleted) break;
             }
@@ -87,23 +95,52 @@ public sealed class SocketPipelineSession : ISession
         }
     }
 
-    private async ValueTask ProcessBufferAsync(ReadOnlySequence<byte> buffer)
+    // 헤더를 파싱하여 완전한 패킷 1개를 buffer에서 분리한다.
+    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
+    {
+        if (buffer.Length < PacketPool.HeaderSize)
+        {
+            packet = default;
+            return false;
+        }
+
+        // 헤더를 스택 버퍼로 복사 (최대 4바이트, Zero-allocation 수준)
+        Span<byte> headerBuf = stackalloc byte[PacketPool.HeaderSize];
+        buffer.Slice(0, PacketPool.HeaderSize).CopyTo(headerBuf);
+
+        if (!PacketPool.TryParseHeader(headerBuf, out _, out int bodyLength))
+        {
+            packet = default;
+            return false;
+        }
+
+        int totalLength = PacketPool.HeaderSize + bodyLength;
+        if (buffer.Length < totalLength)
+        {
+            packet = default;
+            return false;
+        }
+
+        packet = buffer.Slice(0, totalLength);
+        buffer = buffer.Slice(totalLength);
+        return true;
+    }
+
+    private async ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
     {
         if (OnReceived == null) return;
 
-        // 연속 세그먼트는 복사 없이 First 슬라이스로 전달
-        if (buffer.IsSingleSegment)
+        if (packet.IsSingleSegment)
         {
-            await OnReceived(buffer.First);
+            await OnReceived(packet.First);
         }
         else
         {
-            // 분산 세그먼트: ArrayPool 임시 버퍼로 병합 (최소 복사)
-            var length = (int)buffer.Length;
+            var length = (int)packet.Length;
             var rented = ArrayPool<byte>.Shared.Rent(length);
             try
             {
-                buffer.CopyTo(rented);
+                packet.CopyTo(rented);
                 await OnReceived(rented.AsMemory(0, length));
             }
             finally
