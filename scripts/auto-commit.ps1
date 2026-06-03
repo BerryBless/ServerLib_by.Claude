@@ -46,7 +46,7 @@ $prompt = @"
 $diff
 "@
 
-$commitMsg = (claude -p $prompt 2>&1) -join "`n"
+$commitMsg = (claude -p $prompt 2>$null) -join "`n"
 $commitMsg = $commitMsg.Trim()
 
 # 생성 실패 시 접두사 기반 폴백
