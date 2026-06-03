@@ -8,6 +8,13 @@ const string Host = "127.0.0.1";
 const int Port = 9000;
 const int BatchSize = 1000;  // 회당 전송 수 (진행 출력 단위)
 
+if (args.Length > 0 && (!int.TryParse(args[0], out _) || int.Parse(args[0]) < 1))
+{
+    Console.Error.WriteLine("사용법: Client [스레드 수]  (기본값: 4)");
+    return;
+}
+int threadCount = args.Length > 0 ? int.Parse(args[0]) : 4;
+
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
@@ -27,12 +34,14 @@ serializer.Serialize(decPacket, decBuf);
 var incMem = incBuf.AsMemory(0, PacketPool.HeaderSize);
 var decMem = decBuf.AsMemory(0, PacketPool.HeaderSize);
 
-Console.WriteLine($"4개 스레드 무한 루프 시작 (Ctrl+C로 종료)");
-Console.WriteLine($"  스레드 0·1 → 증가, 스레드 2·3 → 감소  (배치={BatchSize})");
+int incThreads = threadCount / 2;
+int decThreads = threadCount - incThreads;
+Console.WriteLine($"{threadCount}개 스레드 무한 루프 시작 (Ctrl+C로 종료)");
+Console.WriteLine($"  증가 스레드: {incThreads}개, 감소 스레드: {decThreads}개  (배치={BatchSize})");
 
-var tasks = Enumerable.Range(0, 4).Select(async i =>
+var tasks = Enumerable.Range(0, threadCount).Select(async i =>
 {
-    bool isIncrement = i < 2;
+    bool isIncrement = i < incThreads;
     var label = isIncrement ? "증가" : "감소";
     var sendMem = isIncrement ? incMem : decMem;
     var ct = cts.Token;
