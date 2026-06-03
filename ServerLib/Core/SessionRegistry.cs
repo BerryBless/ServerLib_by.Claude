@@ -32,11 +32,14 @@ public sealed class SessionRegistry : ISessionRegistry
     public async ValueTask BroadcastAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
         var snapshot = _sessions.Values.ToArray();
+        if (snapshot.Length == 0) return;
+
         await Task.WhenAll(snapshot.Select(async s =>
         {
             try { await s.SendAsync(data, cancellationToken); }
             catch (ObjectDisposedException) { }
             catch (SocketException) { }
+            // OperationCanceledException은 의도적으로 전파합니다 — 취소는 개별 세션 실패가 아닌 호출자의 명시적 요청입니다.
         }));
     }
 

@@ -60,7 +60,8 @@ public interface ISessionRegistry
     /// <item><description><b>Blocking:</b> Non-blocking. 모든 병렬 전송이 완료될 때까지 비동기 대기합니다.</description></item>
     /// <item><description><b>Error Handling:</b> 개별 세션 전송 실패(<see cref="ObjectDisposedException"/>,
     /// <see cref="System.Net.Sockets.SocketException"/>)는 무시됩니다.
-    /// 한 세션 실패가 나머지 브로드캐스트를 중단시키지 않습니다.</description></item>
+    /// 한 세션 실패가 나머지 브로드캐스트를 중단시키지 않습니다.
+    /// <see cref="OperationCanceledException"/>은 전파됩니다 — 취소는 개별 세션 실패가 아닌 호출자의 명시적 요청으로 처리합니다.</description></item>
     /// </list>
     /// </remarks>
     ValueTask BroadcastAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default);
