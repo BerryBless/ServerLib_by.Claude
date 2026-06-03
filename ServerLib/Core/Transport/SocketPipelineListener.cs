@@ -16,6 +16,8 @@ public sealed class SocketPipelineListener : IServerListener
     public Func<ISession, ValueTask>? OnClientConnected { get; set; }
     public Func<ISession, ValueTask>? OnClientDisconnected { get; set; }
     public Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
+    public TimeSpan? IdleTimeout { get; set; }
+    public Func<ISession, ValueTask>? OnIdleTimeout { get; set; }
 
     public SocketPipelineListener(ISessionRegistrar? registrar = null)
     {
@@ -33,6 +35,8 @@ public sealed class SocketPipelineListener : IServerListener
         _listenSocket.Listen(backlog: 512);
 
         _ = AcceptLoopAsync(_cts.Token);
+        if (IdleTimeout.HasValue)
+            _ = IdleSweepLoopAsync(IdleTimeout.Value, _cts.Token);
     }
 
     public void Stop()
@@ -53,6 +57,36 @@ public sealed class SocketPipelineListener : IServerListener
         _cts?.Dispose();
         _cts = null;
     }
+
+    private async Task IdleSweepLoopAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        // 스윕 간격 = timeout/2 (최소 10ms) → 최대 1.5× timeout 후 감지
+        var interval = TimeSpan.FromTicks(Math.Max(timeout.Ticks / 2, TimeSpan.FromMilliseconds(10).Ticks));
+        using var timer = new PeriodicTimer(interval);
+        while (await timer.WaitForNextTickAsync(ct))
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var session in _activeSessions.Values)
+            {
+                if (now - session.LastReceivedAt <= timeout) continue;
+                try
+                {
+                    if (OnIdleTimeout != null)
+                        await OnIdleTimeout(session);
+                    await session.DisposeAsync(); // OnDisconnected 자동 유발
+                }
+                catch { /* 개별 세션 실패가 스윕 중단 방지 */ }
+            }
+        }
+    }
+
+    /// <summary>테스트 전용 — 세션을 _activeSessions에 직접 주입합니다.</summary>
+    internal void InjectSessionForTest(ISession session)
+        => _activeSessions[session.SessionId] = session;
+
+    /// <summary>테스트 전용 — IdleSweepLoopAsync를 Start() 없이 직접 시작합니다.</summary>
+    internal Task StartIdleSweepForTest(CancellationToken ct)
+        => IdleSweepLoopAsync(IdleTimeout!.Value, ct);
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {

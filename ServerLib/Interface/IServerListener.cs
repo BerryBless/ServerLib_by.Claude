@@ -62,6 +62,33 @@ public interface IServerListener
     Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
 
     /// <summary>
+    /// 유휴 세션 타임아웃 기간입니다. <see langword="null"/>이면 유휴 감지를 비활성화합니다(기본값).
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="Start"/>() 호출 전에 설정해야 합니다.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// </list>
+    /// </remarks>
+    TimeSpan? IdleTimeout { get; set; }
+
+    /// <summary>
+    /// 세션이 유휴 타임아웃으로 해제되기 직전 호출되는 콜백입니다.
+    /// <see cref="ISession.OnDisconnected"/>보다 먼저 발화됩니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Context:</b> 스윕 루프 내부 스레드에서 호출됩니다. 동기 블로킹 금지.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// </list>
+    /// </remarks>
+    Func<ISession, ValueTask>? OnIdleTimeout { get; set; }
+
+    /// <summary>
     /// 지정된 포트에서 클라이언트 연결 수락을 시작합니다.
     /// </summary>
     /// <param name="port">리슨할 TCP 포트 번호 (1–65535).</param>
