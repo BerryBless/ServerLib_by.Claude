@@ -41,10 +41,14 @@ public sealed class SocketPipelineListener : IServerListener
         _listenSocket?.Dispose();
         _listenSocket = null;
 
-        // 활성 세션 전체를 동기적으로 정리: 각 세션의 DisposeAsync가 OnDisconnected를 유발하여 자동 Unregister됨
+        // 활성 세션 전체를 동기적으로 정리: DisposeAsync가 I/O 루프를 취소하고 소켓을 닫는다.
+        // OnDisconnected 콜백은 ReadPipeAsync의 finally에서 비동기로 실행되므로 Stop() 반환 이후에 발화될 수 있다.
         var sessions = _activeSessions.Values.ToArray();
         foreach (var session in sessions)
-            session.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        {
+            try { session.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+            catch { /* 개별 세션 정리 실패는 나머지 정리를 중단시키지 않는다 */ }
+        }
 
         _cts?.Dispose();
         _cts = null;
