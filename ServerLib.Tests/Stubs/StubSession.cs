@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using ServerLib.Interface;
 
@@ -11,12 +12,13 @@ internal sealed class StubSession : ISession
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
     public bool ThrowOnSend { get; init; }
-    public List<byte[]> SentBuffers { get; } = new();
+    public ConcurrentQueue<byte[]> SentBuffers { get; } = new();
 
     public ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (ThrowOnSend) throw new ObjectDisposedException(nameof(StubSession));
-        SentBuffers.Add(data.ToArray());
+        SentBuffers.Enqueue(data.ToArray());
         return ValueTask.CompletedTask;
     }
 
