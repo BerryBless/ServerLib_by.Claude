@@ -1,6 +1,12 @@
 # auto-commit.ps1
 # Stop 훅에서 호출 — claude -p 로 WHY 중심 커밋 메시지 생성 후 자동 커밋 & 푸시
 
+# [필수] 외부 프로세스(claude.exe) stdout을 UTF-8로 디코딩.
+# 한국어 Windows 기본 콘솔 인코딩은 CP949(ks_c_5601-1987)라서
+# UTF-8로 출력되는 claude 결과의 한글이 깨지고, 검증 정규식(^수정|^추가...)이
+# 첫 글자부터 실패하여 폴백 메시지로 커밋되는 문제를 방지한다.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
 $repo = "E:\project\ClaudeCodeStudy"
 
 # 1. 변경사항 확인
