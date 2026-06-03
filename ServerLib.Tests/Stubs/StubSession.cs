@@ -14,6 +14,7 @@ internal sealed class StubSession : ISession
     public Func<ValueTask>? OnDisconnected { get; set; }
     public bool ThrowOnSend { get; init; }
     public ConcurrentQueue<byte[]> SentBuffers { get; } = new();
+    public bool WasDisposed { get; private set; }
 
     public ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
@@ -23,5 +24,9 @@ internal sealed class StubSession : ISession
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        WasDisposed = true;
+        return ValueTask.CompletedTask;
+    }
 }
