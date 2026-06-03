@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using ServerLib.Interface;
@@ -34,13 +35,30 @@ public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
         var snapshot = _sessions.Values.ToArray();
         if (snapshot.Length == 0) return;
 
-        await Task.WhenAll(snapshot.Select(async s =>
+        var sends = ArrayPool<ValueTask>.Shared.Rent(snapshot.Length);
+        try
         {
-            try { await s.SendAsync(data, cancellationToken); }
-            catch (ObjectDisposedException) { }
-            catch (SocketException) { }
-            // OperationCanceledException은 의도적으로 전파합니다 — 취소는 개별 세션 실패가 아닌 호출자의 명시적 요청입니다.
-        }));
+            // 모든 세션에 전송 시작 (async 람다 없음 — 클로저/상태머신 할당 제거)
+            for (int i = 0; i < snapshot.Length; i++)
+            {
+                try { sends[i] = snapshot[i].SendAsync(data, cancellationToken); }
+                catch (ObjectDisposedException) { sends[i] = ValueTask.CompletedTask; }
+                catch (SocketException) { sends[i] = ValueTask.CompletedTask; }
+            }
+            // 모든 전송이 이미 시작된 후 완료 대기 (병렬 전송 유지)
+            // OperationCanceledException은 의도적으로 전파 — 호출자의 명시적 취소 요청
+            for (int i = 0; i < snapshot.Length; i++)
+            {
+                try { await sends[i].ConfigureAwait(false); }
+                catch (ObjectDisposedException) { }
+                catch (SocketException) { }
+            }
+        }
+        finally
+        {
+            Array.Clear(sends, 0, snapshot.Length); // IValueTaskSource 참조 해제
+            ArrayPool<ValueTask>.Shared.Return(sends);
+        }
     }
 
     /// <inheritdoc/>
