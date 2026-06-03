@@ -1,4 +1,5 @@
 using System.Text;
+using ServerLib.Core.Serialization;
 
 namespace ServerLib.Core.Serialization.Packets;
 
@@ -13,14 +14,26 @@ public sealed class EchoPacket : IPacket
     /// <inheritdoc/>
     public ushort PacketId => Id;
 
+    private string _message = string.Empty;
+    private int _messageBytes = -1;
+
     /// <summary>에코할 문자열 메시지입니다.</summary>
-    public string Message { get; set; } = string.Empty;
+    public string Message
+    {
+        get => _message;
+        set { _message = value; _messageBytes = -1; }
+    }
+
+    // GetBodySize와 Serialize 간 UTF-8 스캔 중복 방지 (2회 → 1회)
+    private int MessageByteCount => _messageBytes >= 0
+        ? _messageBytes
+        : (_messageBytes = Encoding.UTF8.GetByteCount(_message));
 
     /// <inheritdoc/>
-    public int GetBodySize() => 2 + Encoding.UTF8.GetByteCount(Message);
+    public int GetBodySize() => 2 + MessageByteCount;
 
     /// <inheritdoc/>
-    public void Serialize(ref SpanWriter writer) => writer.WriteString(Message);
+    public void Serialize(ref SpanWriter writer) => writer.WriteString(_message, MessageByteCount);
 
     /// <inheritdoc/>
     public void Deserialize(ref SpanReader reader) => Message = reader.ReadString();

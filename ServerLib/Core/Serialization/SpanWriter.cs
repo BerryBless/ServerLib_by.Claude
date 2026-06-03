@@ -111,4 +111,23 @@ public ref struct SpanWriter
         Encoding.UTF8.GetBytes(value, _buffer.Slice(_position, byteCount));
         _position += byteCount;
     }
+
+    /// <summary>
+    /// 사전에 계산된 UTF-8 바이트 수를 사용하여 문자열을 기록합니다.
+    /// <see cref="WriteString(string)"/> 대비 <c>GetByteCount</c> 호출 1회 절감.
+    /// </summary>
+    /// <param name="value">기록할 문자열입니다.</param>
+    /// <param name="precomputedByteCount">호출자가 미리 계산한 UTF-8 바이트 수입니다.</param>
+    /// <remarks>
+    /// <b>[Memory Allocation:]</b> Zero-allocation.
+    /// </remarks>
+    public void WriteString(string value, int precomputedByteCount)
+    {
+        if ((uint)precomputedByteCount > ushort.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(precomputedByteCount), precomputedByteCount, "UTF-8 인코딩 바이트 길이가 65535를 초과합니다.");
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)precomputedByteCount);
+        _position += 2;
+        Encoding.UTF8.GetBytes(value, _buffer.Slice(_position, precomputedByteCount));
+        _position += precomputedByteCount;
+    }
 }

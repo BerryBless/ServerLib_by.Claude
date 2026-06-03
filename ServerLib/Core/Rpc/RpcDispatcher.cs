@@ -9,7 +9,7 @@ public sealed class RpcDispatcher : IRpcHandler
     // PacketId → 핸들러 매핑: Dictionary 대신 배열 인덱싱으로 O(1) 룩업
     private readonly Func<ISession, ReadOnlyMemory<byte>, CancellationToken, ValueTask>?[] _handlers;
 
-    public RpcDispatcher(int maxPacketId = 65536)
+    public RpcDispatcher(int maxPacketId = 256)
     {
         _handlers = new Func<ISession, ReadOnlyMemory<byte>, CancellationToken, ValueTask>?[maxPacketId];
     }

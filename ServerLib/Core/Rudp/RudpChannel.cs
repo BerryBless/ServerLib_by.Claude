@@ -71,20 +71,36 @@ public sealed class RudpChannel : IAsyncDisposable
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        var socket = _udp.Client;
+        var recvBuffer = ArrayPool<byte>.Shared.Rent(65536);
+        EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                var result = await _udp.ReceiveAsync(ct);
-                var data = result.Buffer;
-                if (data.Length < HeaderSize) continue;
+                try
+                {
+                    var result = await socket.ReceiveFromAsync(
+                        recvBuffer.AsMemory(), SocketFlags.None, remote, ct);
+                    int received = result.ReceivedBytes;
+                    if (received < HeaderSize) continue;
 
-                var seq = ReadUint32(data, 0);
-                if (_recvWindow.OnReceive(seq, out _) && OnReceived != null)
-                    await OnReceived(data.AsMemory(HeaderSize));
+                    var seq = ReadUint32(recvBuffer, 0);
+                    if (_recvWindow.OnReceive(seq, out _) && OnReceived != null)
+                    {
+                        // 페이로드만 복사하여 소유권 이전 (recvBuffer 재사용 보장)
+                        var payload = new byte[received - HeaderSize];
+                        recvBuffer.AsSpan(HeaderSize, received - HeaderSize).CopyTo(payload);
+                        await OnReceived(payload.AsMemory());
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch (SocketException) { break; }
             }
-            catch (OperationCanceledException) { break; }
-            catch (SocketException) { break; }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(recvBuffer);
         }
     }
 

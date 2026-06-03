@@ -1,4 +1,5 @@
 using System.Text;
+using ServerLib.Core.Serialization;
 
 namespace ServerLib.Core.Serialization.Packets;
 
@@ -13,22 +14,42 @@ public sealed class ChatPacket : IPacket
     /// <inheritdoc/>
     public ushort PacketId => Id;
 
+    private string _sender = string.Empty;
+    private string _content = string.Empty;
+    private int _senderBytes = -1;
+    private int _contentBytes = -1;
+
     /// <summary>메시지를 보낸 플레이어 이름입니다.</summary>
-    public string Sender { get; set; } = string.Empty;
+    public string Sender
+    {
+        get => _sender;
+        set { _sender = value; _senderBytes = -1; }
+    }
 
     /// <summary>채팅 내용입니다.</summary>
-    public string Content { get; set; } = string.Empty;
+    public string Content
+    {
+        get => _content;
+        set { _content = value; _contentBytes = -1; }
+    }
+
+    // GetBodySize와 Serialize 간 UTF-8 스캔 중복 방지 (4회 → 2회)
+    private int SenderByteCount => _senderBytes >= 0
+        ? _senderBytes
+        : (_senderBytes = Encoding.UTF8.GetByteCount(_sender));
+
+    private int ContentByteCount => _contentBytes >= 0
+        ? _contentBytes
+        : (_contentBytes = Encoding.UTF8.GetByteCount(_content));
 
     /// <inheritdoc/>
-    public int GetBodySize() =>
-        2 + Encoding.UTF8.GetByteCount(Sender) +
-        2 + Encoding.UTF8.GetByteCount(Content);
+    public int GetBodySize() => 2 + SenderByteCount + 2 + ContentByteCount;
 
     /// <inheritdoc/>
     public void Serialize(ref SpanWriter writer)
     {
-        writer.WriteString(Sender);
-        writer.WriteString(Content);
+        writer.WriteString(_sender, SenderByteCount);
+        writer.WriteString(_content, ContentByteCount);
     }
 
     /// <inheritdoc/>
