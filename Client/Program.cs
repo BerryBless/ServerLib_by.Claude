@@ -52,10 +52,15 @@ var tasks = Enumerable.Range(0, 4).Select(async i =>
 
     await conn.ConnectAsync(Host, Port, ct);
 
-    for (int j = 0; j < SendCount; j++)
-        await conn.SendAsync(sendMem);
-
-    Console.WriteLine($"  [Thread {i}] {label} {SendCount}회 완료");
+    while (!ct.IsCancellationRequested)
+    {
+        for (int j = 0; j < BatchSize && !ct.IsCancellationRequested; j++)
+        {
+            await conn.SendAsync(sendMem, ct);
+            total++;
+        }
+        Console.WriteLine($"  [T{i}] {label} {total:N0}회 전송");
+    }
 }).ToArray();
 
 await Task.WhenAll(tasks);
