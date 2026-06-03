@@ -43,6 +43,13 @@ listener.OnReceived = (session, data) =>
     return ValueTask.CompletedTask;
 };
 
+listener.IdleTimeout = TimeSpan.FromSeconds(30);
+listener.OnIdleTimeout = session =>
+{
+    Console.WriteLine($"[Timeout] {session.RemoteEndPoint}  idle={DateTimeOffset.UtcNow - session.LastReceivedAt:mm\\:ss}");
+    return ValueTask.CompletedTask;
+};
+
 listener.Start(Port);
 Console.WriteLine($"[Server] port {Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}).");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
