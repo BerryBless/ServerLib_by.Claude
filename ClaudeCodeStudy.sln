@@ -12,6 +12,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Benchmark", "Benchmark\Benc
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LoadTest", "LoadTest\LoadTest.csproj", "{853EB922-994E-439D-BFD0-080F0DB2BE32}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServerLib.Tests", "ServerLib.Tests\ServerLib.Tests.csproj", "{ABA80050-8F5F-4E18-893B-87AF41F4B766}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -94,6 +96,18 @@ Global
 		{853EB922-994E-439D-BFD0-080F0DB2BE32}.Release|x64.Build.0 = Release|Any CPU
 		{853EB922-994E-439D-BFD0-080F0DB2BE32}.Release|x86.ActiveCfg = Release|Any CPU
 		{853EB922-994E-439D-BFD0-080F0DB2BE32}.Release|x86.Build.0 = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|x64.Build.0 = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Debug|x86.Build.0 = Debug|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|x64.ActiveCfg = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|x64.Build.0 = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|x86.ActiveCfg = Release|Any CPU
+		{ABA80050-8F5F-4E18-893B-87AF41F4B766}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
