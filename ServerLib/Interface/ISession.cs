@@ -44,6 +44,21 @@ public interface ISession : IAsyncDisposable
     DateTimeOffset ConnectedAt { get; }
 
     /// <summary>
+    /// 마지막으로 데이터를 수신한 정확한 시각(UTC)입니다.
+    /// 연결 수립 시 <see cref="ConnectedAt"/>과 동일값으로 초기화되며,
+    /// 데이터 수신마다 원자적으로 갱신됩니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. Interlocked 기반으로 원자적 갱신됩니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
+    /// </list>
+    /// </remarks>
+    DateTimeOffset LastReceivedAt { get; }
+
+    /// <summary>
     /// 원격 클라이언트로부터 데이터가 수신될 때 호출되는 콜백입니다.
     /// </summary>
     /// <remarks>

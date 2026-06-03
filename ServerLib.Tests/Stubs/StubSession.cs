@@ -9,6 +9,7 @@ internal sealed class StubSession : ISession
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint => null;
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastReceivedAt { get; set; } = DateTimeOffset.UtcNow;
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
     public bool ThrowOnSend { get; init; }

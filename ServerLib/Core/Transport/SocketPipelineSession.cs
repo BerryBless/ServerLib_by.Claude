@@ -15,10 +15,12 @@ public sealed class SocketPipelineSession : ISession
     private readonly Pipe _pipe;
     private readonly CancellationTokenSource _cts = new();
     private int _disposed;
+    private long _lastReceivedAtTicks;
 
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastReceivedAt => new DateTimeOffset(Interlocked.Read(ref _lastReceivedAtTicks), TimeSpan.Zero);
 
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
@@ -28,6 +30,8 @@ public sealed class SocketPipelineSession : ISession
         _socket = socket;
         RemoteEndPoint = socket.RemoteEndPoint;
         _pipe = new Pipe();
+        var now = DateTimeOffset.UtcNow;
+        _lastReceivedAtTicks = now.UtcTicks;
     }
 
     public void StartReceiving()
@@ -128,6 +132,10 @@ public sealed class SocketPipelineSession : ISession
 
     private async ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
     {
+        // Update LastReceivedAt atomically
+        var now = DateTimeOffset.UtcNow;
+        Interlocked.Exchange(ref _lastReceivedAtTicks, now.UtcTicks);
+
         if (OnReceived == null) return;
 
         if (packet.IsSingleSegment)
