@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using ServerLib.Interface;
@@ -9,6 +10,7 @@ public sealed class SocketPipelineListener : IServerListener
     private Socket? _listenSocket;
     private CancellationTokenSource? _cts;
     private readonly ISessionRegistrar? _registrar;
+    private readonly ConcurrentDictionary<Guid, ISession> _activeSessions = new();
 
     public bool IsRunning => _listenSocket != null;
     public Func<ISession, ValueTask>? OnClientConnected { get; set; }
@@ -38,6 +40,12 @@ public sealed class SocketPipelineListener : IServerListener
         _cts?.Cancel();
         _listenSocket?.Dispose();
         _listenSocket = null;
+
+        // 활성 세션 전체를 동기적으로 정리: 각 세션의 DisposeAsync가 OnDisconnected를 유발하여 자동 Unregister됨
+        var sessions = _activeSessions.Values.ToArray();
+        foreach (var session in sessions)
+            session.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
         _cts?.Dispose();
         _cts = null;
     }
@@ -55,12 +63,14 @@ public sealed class SocketPipelineListener : IServerListener
                 session.OnDisconnected = async () =>
                 {
                     _registrar?.Unregister(session.SessionId);
+                    _activeSessions.TryRemove(session.SessionId, out _);
                     if (OnClientDisconnected != null)
                         await OnClientDisconnected(session);
                     await session.DisposeAsync();
                 };
 
                 _registrar?.Register(session);
+                _activeSessions[session.SessionId] = session;
                 session.StartReceiving();
 
                 if (OnClientConnected != null)
