@@ -51,12 +51,21 @@ public sealed class RudpChannel : IAsyncDisposable
     {
         while (!ct.IsCancellationRequested)
         {
+            RudpSegment segment = default;
+            bool hasSegment = false;
             try
             {
-                var segment = await _sendQueue.DequeueAsync(ct);
+                segment = await _sendQueue.DequeueAsync(ct);
+                hasSegment = true;
                 await _udp.SendAsync(segment.Buffer.AsMemory(0, segment.Length), RemoteEndPoint, ct);
             }
             catch (OperationCanceledException) { break; }
+            catch (SocketException) { }
+            finally
+            {
+                if (hasSegment && segment.Buffer is not null)
+                    ArrayPool<byte>.Shared.Return(segment.Buffer);
+            }
         }
     }
 

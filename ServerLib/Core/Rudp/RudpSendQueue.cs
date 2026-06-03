@@ -58,5 +58,7 @@ public sealed class RudpSendQueue : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _queue.Writer.TryComplete();
+        while (_queue.Reader.TryRead(out var segment))
+            ArrayPool<byte>.Shared.Return(segment.Buffer);
     }
 }
