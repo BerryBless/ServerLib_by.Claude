@@ -7,8 +7,7 @@ const int Port = 9000;
 
 var registry = new SessionRegistry();
 var metrics = new ServerMetrics();
-var listener = new SocketPipelineListener();
-listener.Registry = registry;
+var listener = new SocketPipelineListener(registry);
 
 var test = 0;
 long windowPackets = 0;

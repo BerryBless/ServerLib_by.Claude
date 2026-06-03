@@ -5,9 +5,7 @@ namespace ServerLib.Interface;
 /// <b>[설계 원칙]</b>
 /// <list type="bullet">
 /// <item><description><b>Thread Safety:</b> Thread-safe. 모든 멤버는 동시 호출 안전합니다.</description></item>
-/// <item><description><b>사용 제한:</b> <see cref="Register"/>와 <see cref="Unregister"/>는
-/// <c>SocketPipelineListener</c> 내부에서만 호출됩니다.
-/// 외부 코드는 <see cref="TryGet"/>, <see cref="GetAll"/>, <see cref="BroadcastAsync"/>만 사용하십시오.</description></item>
+/// <item><description>세션 등록·해제는 <see cref="ISessionRegistrar"/>를 통해 수행됩니다.</description></item>
 /// </list>
 /// </remarks>
 public interface ISessionRegistry
@@ -66,29 +64,4 @@ public interface ISessionRegistry
     /// </remarks>
     ValueTask BroadcastAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default);
 
-    /// <summary>세션을 레지스트리에 등록합니다.</summary>
-    /// <param name="session">등록할 세션</param>
-    /// <remarks>
-    /// <b>[성능 및 동시성 제약 조건]</b>
-    /// <list type="bullet">
-    /// <item><description><b>Thread Safety:</b> Thread-safe.</description></item>
-    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
-    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
-    /// <item><description><b>사용 제한:</b> <c>SocketPipelineListener</c> 내부 전용입니다. 외부에서 직접 호출하지 마십시오.</description></item>
-    /// </list>
-    /// </remarks>
-    void Register(ISession session);
-
-    /// <summary>세션을 레지스트리에서 제거합니다.</summary>
-    /// <param name="sessionId">제거할 세션의 고유 식별자. 존재하지 않아도 예외가 발생하지 않습니다.</param>
-    /// <remarks>
-    /// <b>[성능 및 동시성 제약 조건]</b>
-    /// <list type="bullet">
-    /// <item><description><b>Thread Safety:</b> Thread-safe.</description></item>
-    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
-    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
-    /// <item><description><b>사용 제한:</b> <c>SocketPipelineListener</c> 내부 전용입니다.</description></item>
-    /// </list>
-    /// </remarks>
-    void Unregister(Guid sessionId);
 }

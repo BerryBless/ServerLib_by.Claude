@@ -4,7 +4,7 @@ using ServerLib.Interface;
 
 namespace ServerLib.Core;
 
-/// <summary><see cref="ISessionRegistry"/>의 <see cref="ConcurrentDictionary{TKey,TValue}"/> 기반 구현체입니다.</summary>
+/// <summary><see cref="ISessionRegistry"/> 및 <see cref="ISessionRegistrar"/>의 <see cref="ConcurrentDictionary{TKey,TValue}"/> 기반 구현체입니다.</summary>
 /// <remarks>
 /// <b>[성능 및 동시성 제약 조건]</b>
 /// <list type="bullet">
@@ -13,7 +13,7 @@ namespace ServerLib.Core;
 /// <item><description><b>Blocking:</b> <see cref="BroadcastAsync"/>는 모든 병렬 전송 완료까지 비동기 대기합니다. 나머지 멤버는 즉시 반환합니다.</description></item>
 /// </list>
 /// </remarks>
-public sealed class SessionRegistry : ISessionRegistry
+public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
 {
     private readonly ConcurrentDictionary<Guid, ISession> _sessions = new();
 
