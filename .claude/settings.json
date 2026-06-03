@@ -1,23 +1,23 @@
-{
-  "enabledPlugins": {
-    "harness@harness-marketplace": true,
-    "superpowers@claude-plugins-official": true,
-    "superpowers@superpowers-marketplace": true
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "shell": "powershell",
-            "command": "$s=git status --porcelain 2>&1;if(-not $s){exit 0};$sf=($s -join ' ');$hs=($sf -match '(?i)\\.(env|pem|key|p12|pfx)|id_rsa') -and ($sf -notmatch '\\.example');if($hs){Write-Output '{\"systemMessage\":\"⚠️ 민감 파일 감지 - 자동 커밋 차단됨. /commitandpush 로 수동 처리하세요.\"}';exit 2};git add .;$n=(git diff --staged --name-only 2>&1|Measure-Object -Line).Lines;if($n -eq 0){exit 0};$fs=((git diff --staged --name-only 2>&1|Select-Object     -First 2)-join', ');git commit -m ('자동: '+$fs+' 외 '+$n+'개 수정'+[char]10+[char]10+'Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>') 2>&1;if($LASTEXITCODE -eq 0){$r=git remote 2>&1;if($r){git push 2>&1}}",
-            "asyncRewake": true,
-            "timeout": 60,
-            "statusMessage": "변경사항 자동 커밋 중..."
-          }
-        ]
-      }
-    ]
+ {
+    "enabledPlugins": {
+      "harness@harness-marketplace": true,
+      "superpowers@claude-plugins-official": true,
+      "superpowers@superpowers-marketplace": true
+    },
+    "hooks": {
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "shell": "powershell",
+              "command": "pwsh -NonInteractive -File \"E:\\project\\ClaudeCodeStudy\\scripts\\auto-commit.ps1\"",
+              "asyncRewake": true,
+              "timeout": 60,
+              "statusMessage": "변경사항 자동 커밋 중..."
+            }
+          ]
+        }
+      ]
+    }
   }
-}
