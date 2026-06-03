@@ -48,11 +48,11 @@ _ = Task.Run(async () =>
 {
     while (!cts.Token.IsCancellationRequested)
     {
-        try { await Task.Delay(5000, cts.Token); }
+        try { await Task.Delay(10000, cts.Token); }
         catch (OperationCanceledException) { break; }
 
         long count = Interlocked.Exchange(ref windowPackets, 0);
-        Console.WriteLine($"[Monitor] sessions={metrics.ConnectedCount}  packets/5s={count:N0}  test={Volatile.Read(ref test)}");
+        Console.WriteLine($"[Monitor] sessions={metrics.ConnectedCount}  packets/10s={count:N0}  test={Volatile.Read(ref test)}");
     }
 });
 
