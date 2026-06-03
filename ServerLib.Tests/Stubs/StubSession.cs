@@ -24,9 +24,11 @@ internal sealed class StubSession : ISession
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        if (WasDisposed) return; // 이중 호출 방어
         WasDisposed = true;
-        return ValueTask.CompletedTask;
+        if (OnDisconnected != null)
+            await OnDisconnected(); // 프로덕션 동작과 동일한 OnDisconnected 발화
     }
 }

@@ -51,7 +51,8 @@ public sealed class SocketPipelineSession : ISession
                 var memory = writer.GetMemory(MinBufferSize);
                 int bytesRead = await _socket.ReceiveAsync(memory, SocketFlags.None, ct);
                 if (bytesRead == 0) break;
-                Interlocked.Exchange(ref _lastReceivedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+                // 단일 writer(FillPipeAsync)이므로 Volatile.Write로 충분 (64-bit aligned long)
+                Volatile.Write(ref _lastReceivedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
 
                 writer.Advance(bytesRead);
                 var flush = await writer.FlushAsync(ct);

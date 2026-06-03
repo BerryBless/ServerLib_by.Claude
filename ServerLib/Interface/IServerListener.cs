@@ -67,9 +67,14 @@ public interface IServerListener
     /// <remarks>
     /// <b>[성능 및 동시성 제약 조건]</b>
     /// <list type="bullet">
-    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="Start"/>() 호출 전에 설정해야 합니다.</description></item>
+    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="Start"/>() 호출 전에 설정해야 합니다.
+    /// Start() 이후 변경 시 <see cref="InvalidOperationException"/>이 발생합니다.</description></item>
     /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
     /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>보안 주의:</b> <see langword="null"/>(기본값) 상태로 프로덕션 배포 시 유휴 세션이 무제한 잔류하여
+    /// 리소스 고갈 위험이 있습니다. 프로덕션에서는 반드시 설정하십시오.
+    /// 또한 소켓 레이어 수신 기반이므로 최소 데이터(1바이트) 전송으로 타임아웃 회피가 가능합니다.
+    /// 절대 수명 제한이 필요한 경우 <see cref="ISession.ConnectedAt"/>을 별도로 감시하십시오.</description></item>
     /// </list>
     /// </remarks>
     TimeSpan? IdleTimeout { get; set; }
