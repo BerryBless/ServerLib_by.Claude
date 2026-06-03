@@ -51,6 +51,7 @@ public sealed class SocketPipelineSession : ISession
                 var memory = writer.GetMemory(MinBufferSize);
                 int bytesRead = await _socket.ReceiveAsync(memory, SocketFlags.None, ct);
                 if (bytesRead == 0) break;
+                Interlocked.Exchange(ref _lastReceivedAtTicks, DateTimeOffset.UtcNow.Ticks);
 
                 writer.Advance(bytesRead);
                 var flush = await writer.FlushAsync(ct);
@@ -132,10 +133,6 @@ public sealed class SocketPipelineSession : ISession
 
     private async ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
     {
-        // Update LastReceivedAt atomically
-        var now = DateTimeOffset.UtcNow;
-        Interlocked.Exchange(ref _lastReceivedAtTicks, now.UtcTicks);
-
         if (OnReceived == null) return;
 
         if (packet.IsSingleSegment)
