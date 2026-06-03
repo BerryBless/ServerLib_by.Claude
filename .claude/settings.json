@@ -1,9 +1,19 @@
  {
     "enabledPlugins": {
-      "harness@harness-marketplace": true,
-      "superpowers@claude-plugins-official": true,
-      "superpowers@superpowers-marketplace": true
-    },
+     "harness@harness-marketplace": true,
+     "superpowers@claude-plugins-official": true,
+     "superpowers@superpowers-marketplace": false
+   },
+   "env": {
+     "ENABLE_CLAUDEAI_MCP_SERVERS": "false"
+   },
+   "permissions": {
+     "deny": [
+       "WebSearch",
+       "WebFetch",
+       "NotebookEdit"
+     ]
+   },
     "hooks": {
       "Stop": [
         {
