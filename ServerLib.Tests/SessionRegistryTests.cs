@@ -1,5 +1,4 @@
 using ServerLib.Core;
-using ServerLib.Interface;
 using ServerLib.Tests.Stubs;
 using Xunit;
 
@@ -19,6 +18,18 @@ public sealed class SessionRegistryTests
     {
         var registry = new SessionRegistry();
         registry.Register(new StubSession());
+        Assert.Equal(1, registry.Count);
+    }
+
+    [Fact]
+    public void Register_SameSessionTwice_CountRemainsOne()
+    {
+        var registry = new SessionRegistry();
+        var session = new StubSession();
+
+        registry.Register(session);
+        registry.Register(session); // 동일 SessionId 재등록
+
         Assert.Equal(1, registry.Count);
     }
 
@@ -65,6 +76,14 @@ public sealed class SessionRegistryTests
     }
 
     [Fact]
+    public void GetAll_WhenEmpty_ReturnsEmptyCollection()
+    {
+        var registry = new SessionRegistry();
+        var all = registry.GetAll();
+        Assert.Empty(all);
+    }
+
+    [Fact]
     public void GetAll_TwoRegisteredSessions_ReturnsBoth()
     {
         var registry = new SessionRegistry();
@@ -90,6 +109,14 @@ public sealed class SessionRegistryTests
         registry.Register(new StubSession()); // 이후 추가
 
         Assert.Single(snapshot);  // 스냅샷은 이전 상태 유지
+    }
+
+    [Fact]
+    public async Task BroadcastAsync_EmptyRegistry_CompletesWithoutException()
+    {
+        var registry = new SessionRegistry();
+        var ex = await Record.ExceptionAsync(() => registry.BroadcastAsync(new byte[] { 1 }).AsTask());
+        Assert.Null(ex);
     }
 
     [Fact]
@@ -119,9 +146,9 @@ public sealed class SessionRegistryTests
         registry.Register(good);
         registry.Register(bad);
 
-        // 예외가 전파되지 않아야 한다
-        await registry.BroadcastAsync(new byte[] { 1 });
+        var ex = await Record.ExceptionAsync(() => registry.BroadcastAsync(new byte[] { 1 }).AsTask());
 
+        Assert.Null(ex);
         Assert.Single(good.SentBuffers);
     }
 }
