@@ -34,6 +34,11 @@ $diff = (git -C $repo diff --staged 2>&1) -join "`n"
 if ($diff.Length -gt 8000) { $diff = $diff.Substring(0, 8000) + "`n...(truncated)" }
 
 # 6. claude -p 로 WHY 중심 커밋 메시지 생성
+#    - --model haiku: 커밋 메시지 생성에 Opus는 불필요하고 느림. Haiku로 충분하며 빠름.
+#    - Start-Job 35초 가드: claude -p 가 콜드스타트(플러그인·MCP 로드)로 60초를 넘기면
+#      훅이 add 후 commit 전에 kill 되어 staged 상태로 남는 문제를 방지한다.
+#      35초 초과 시 Stop-Job → 빈 문자열 반환 → 아래 폴백 로직이 접두사 기반 메시지를 생성하고
+#      git commit 은 반드시 실행된다.
 $prompt = @"
 아래 git diff를 분석하여 한국어 커밋 메시지를 작성하라.
 
@@ -52,8 +57,22 @@ $prompt = @"
 $diff
 "@
 
-$commitMsg = (claude -p $prompt 2>$null) -join "`n"
-$commitMsg = $commitMsg.Trim()
+$claudePath = "C:\Users\aaa\.local\bin\claude.exe"
+$job = Start-Job -ScriptBlock {
+    param($p, $cp)
+    # 자식 런스페이스에서도 UTF-8 출력 디코딩 (c52cd95 인코딩 버그 재발 방지)
+    try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+    (& $cp -p $p --model haiku 2>$null) -join "`n"
+} -ArgumentList $prompt, $claudePath
+
+$done = Wait-Job $job -Timeout 35
+if ($done) {
+    $commitMsg = (Receive-Job $job).Trim()
+} else {
+    Stop-Job $job
+    $commitMsg = ""
+}
+Remove-Job $job -Force 2>$null
 
 # 생성 실패 시 접두사 기반 폴백
 if (-not $commitMsg -or $commitMsg -notmatch '^(추가|수정|버그수정|리팩토링|문서|테스트|의존성):') {

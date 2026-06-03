@@ -23,7 +23,7 @@
               "shell": "powershell",
               "command": "pwsh -NonInteractive -File \"E:\\project\\ClaudeCodeStudy\\scripts\\auto-commit.ps1\"",
               "asyncRewake": true,
-              "timeout": 60,
+              "timeout": 120,
               "statusMessage": "변경사항 자동 커밋 중..."
             }
           ]
