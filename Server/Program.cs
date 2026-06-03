@@ -5,8 +5,11 @@ using ServerLib.Core.Transport;
 
 const int Port = 9000;
 
+var registry = new SessionRegistry();
 var metrics = new ServerMetrics();
 var listener = new SocketPipelineListener();
+listener.Registry = registry;
+
 var test = 0;
 long windowPackets = 0;
 using var cts = new CancellationTokenSource();
@@ -42,7 +45,8 @@ listener.OnReceived = (session, data) =>
 };
 
 listener.Start(Port);
-Console.WriteLine($"[Server] port {Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}). Enter to stop.");
+Console.WriteLine($"[Server] port {Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}).");
+Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 _ = Task.Run(async () =>
 {
@@ -52,12 +56,21 @@ _ = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
 
         long count = Interlocked.Exchange(ref windowPackets, 0);
-        Console.WriteLine($"[Monitor] sessions={metrics.ConnectedCount}  packets/10s={count:N0}  test={Volatile.Read(ref test)}");
+        Console.WriteLine($"[Monitor] sessions={metrics.ConnectedCount}  packets/10s={count:N0}  test={Volatile.Read(ref test)}  registry={registry.Count}");
     }
 });
 
-Console.ReadLine();
-cts.Cancel();
+while (true)
+{
+    var line = Console.ReadLine();
+    if (line?.Trim().Equals("q", StringComparison.OrdinalIgnoreCase) == true) break;
 
+    var sessions = registry.GetAll();
+    Console.WriteLine($"[Sessions] count={sessions.Count}");
+    foreach (var s in sessions)
+        Console.WriteLine($"  {s.SessionId:N}  {s.RemoteEndPoint}  connected={s.ConnectedAt:HH:mm:ss}");
+}
+
+cts.Cancel();
 listener.Stop();
 Console.WriteLine($"종료  total={metrics.TotalPacketsReceived}  final test={test}");
