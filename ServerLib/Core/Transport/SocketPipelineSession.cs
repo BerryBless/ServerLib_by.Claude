@@ -152,7 +152,7 @@ public sealed class SocketPipelineSession : ISession
 
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed == 1, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
         await _socket.SendAsync(data, SocketFlags.None, cancellationToken);
     }
 

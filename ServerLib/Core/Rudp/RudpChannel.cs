@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 
@@ -106,10 +107,8 @@ public sealed class RudpChannel : IAsyncDisposable
 
     private static void WriteHeader(byte[] buf, uint seq, uint ackSeq)
     {
-        buf[0] = (byte)(seq); buf[1] = (byte)(seq >> 8);
-        buf[2] = (byte)(seq >> 16); buf[3] = (byte)(seq >> 24);
-        buf[4] = (byte)(ackSeq); buf[5] = (byte)(ackSeq >> 8);
-        buf[6] = (byte)(ackSeq >> 16); buf[7] = (byte)(ackSeq >> 24);
+        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(0), seq);
+        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(4), ackSeq);
     }
 
     private static uint ReadUint32(byte[] buf, int offset) =>

@@ -1,7 +1,13 @@
 namespace ServerLib.Core.Rudp;
 
-// 슬라이딩 수신 윈도우: 순서 재조립 + 중복 제거
-// 상태는 Interlocked로 관리하여 lock 없이 동작
+/// <summary>슬라이딩 수신 윈도우: 순서 재조립 + 중복 제거</summary>
+/// <remarks>
+/// <b>[Thread Safety — OnReceive]:</b> Not thread-safe. <see cref="OnReceive"/>는
+/// 단일 수신 스레드(ReceiveLoopAsync)에서만 호출해야 합니다.
+/// <c>_received[]</c> 배열은 원자적 접근이 보장되지 않으므로 동시 호출 시 데이터 레이스가 발생합니다.
+/// <c>_expectedSeq</c>는 <see cref="Volatile"/>/<see cref="Interlocked"/>로 보호되어
+/// 다른 스레드에서 읽기(<see cref="ExpectedSeq"/>)는 안전합니다.
+/// </remarks>
 public sealed class RudpRecvWindow
 {
     private const int WindowSize = 64;
@@ -11,7 +17,8 @@ public sealed class RudpRecvWindow
 
     public uint ExpectedSeq => Volatile.Read(ref _expectedSeq);
 
-    // 수신된 시퀀스 번호 처리, 순서대로 처리 가능한지 반환
+    /// <summary>수신된 시퀀스 번호를 처리하고 순서대로 전달 가능한지 반환합니다.</summary>
+    /// <remarks><b>[Thread Safety:]</b> Not thread-safe. 단일 수신 스레드 전용.</remarks>
     public bool OnReceive(uint seq, out uint advancedTo)
     {
         advancedTo = _expectedSeq;
