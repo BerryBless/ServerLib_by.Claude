@@ -101,6 +101,9 @@ agent = Agent(
     2. git diff --staged --stat 으로 변경 파일 목록 확인
     3. git diff --staged 로 변경 내용 분석
     4. references/commit-message-guide.md 의 규칙에 따라 한국어 커밋 메시지 작성
+       ★ 반드시 접두사 판단 트리를 사용: 추가/수정/버그수정/리팩토링/문서/테스트/의존성
+       ★ '자동:', 'update:', 'fix:', 'add:' 등 금지 접두사 절대 사용 금지
+       ★ 파일명 나열 형식('ServerLib/Core/... 외 N개 수정') 금지 — WHY 중심 메시지 작성
     5. 메시지를 _workspace/02_commit_message.txt 에 저장
     
     작업 디렉토리: {project_root}
