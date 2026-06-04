@@ -16,6 +16,9 @@ internal static class HeartbeatProtocol
     // 무상태 직렬화기 공유 (내부 상태 없음 → thread-safe)
     private static readonly BinaryPacketSerializer Serializer = new();
 
+    /// <summary>지정한 패킷 ID가 PING인지 반환합니다. 세션이 이미 파싱한 ID로 직접 분기해 매 패킷 PONG 프로브를 피하도록 합니다.</summary>
+    public static bool IsPing(ushort packetId) => packetId == PingPacket.Id;
+
     /// <summary>PING 패킷을 dest에 직렬화하고 기록 바이트 수를 반환합니다.</summary>
     public static int BuildPing(long clientTicks, Span<byte> dest)
     {

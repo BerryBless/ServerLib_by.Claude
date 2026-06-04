@@ -136,9 +136,9 @@ public sealed class SocketPipelineSession : ISession
                 var consumed = buffer.Start;
                 var examined = buffer.End;
 
-                while (TryReadPacket(ref buffer, out var packet))
+                while (TryReadPacket(ref buffer, out var packet, out var packetId))
                 {
-                    await DispatchPacketAsync(packet);
+                    await DispatchPacketAsync(packet, packetId);
                     consumed = buffer.Start;
                 }
 
@@ -158,9 +158,11 @@ public sealed class SocketPipelineSession : ISession
         }
     }
 
-    // 헤더를 파싱하여 완전한 패킷 1개를 buffer에서 분리한다.
-    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
+    // 헤더를 파싱하여 완전한 패킷 1개를 buffer에서 분리한다. 파싱한 packetId를 함께 반환해
+    // 호출부가 재파싱 없이 PING 여부를 분기하도록 한다(P8: 매 패킷 PONG 프로브 제거).
+    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet, out ushort packetId)
     {
+        packetId = 0;
         if (buffer.Length < PacketPool.HeaderSize)
         {
             packet = default;
@@ -171,7 +173,7 @@ public sealed class SocketPipelineSession : ISession
         Span<byte> headerBuf = stackalloc byte[PacketPool.HeaderSize];
         buffer.Slice(0, PacketPool.HeaderSize).CopyTo(headerBuf);
 
-        if (!PacketPool.TryParseHeader(headerBuf, out _, out int bodyLength))
+        if (!PacketPool.TryParseHeader(headerBuf, out packetId, out int bodyLength))
         {
             packet = default;
             return false;
@@ -191,12 +193,17 @@ public sealed class SocketPipelineSession : ISession
 
     // P2: 자신을 async로 만들지 않고(=패킷당 상태머신 박싱 제거) 동기 완료 가능 경로에서는 inner ValueTask를 그대로 반환한다.
     // 단일 세그먼트 + 동기 핸들러면 전 경로 무할당. PONG·멀티세그먼트(드묾)만 풀 버퍼 반납 때문에 async 헬퍼로 위임한다.
-    private ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
+    private ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet, ushort packetId)
     {
-        // 예약 ID 가로채기: PING이면 PONG을 회신하고 앱 OnReceived는 호출하지 않는다.
-        var pongBuf = TryBuildPongBuffer(packet, out int pongLen);
-        if (pongBuf != null)
-            return SendPongAsync(pongBuf, pongLen);
+        // 예약 ID 가로채기: PING일 때만 PONG을 회신한다(앱 OnReceived 미호출).
+        // P8: TryReadPacket이 이미 파싱한 packetId로 직접 분기 → PING이 아닌 패킷은 PONG 프로브(stackalloc·CopyTo·헤더 재파싱)를 건너뛴다.
+        if (HeartbeatProtocol.IsPing(packetId))
+        {
+            var pongBuf = TryBuildPongBuffer(packet, out int pongLen);
+            if (pongBuf != null)
+                return SendPongAsync(pongBuf, pongLen);
+            // PING ID지만 본문이 손상되어 PONG 빌드 실패 시: 기존 동작과 동일하게 아래 일반 경로로 떨어진다.
+        }
 
         // 콜백을 지역 변수로 1회만 읽어 IO 스레드 도중 재할당/null 경합을 배제(이전엔 null 검사·호출에서 2회 읽음).
         var onReceived = OnReceived;
