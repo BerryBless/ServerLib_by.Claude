@@ -2,6 +2,7 @@ using ServerLib.Core;
 using ServerLib.Core.Memory;
 using ServerLib.Core.Serialization.Packets;
 using ServerLib.Core.Transport;
+using ServerLib.Interface;
 
 const int Port = 9000;
 
@@ -15,8 +16,9 @@ using var cts = new CancellationTokenSource();
 
 listener.OnClientConnected = session =>
 {
+    session.Context = new GameContext(PlayerId: 1001, Nickname: "홍길동");
     metrics.OnClientConnected();
-    Console.WriteLine($"[+] {session.RemoteEndPoint}  (sessions: {metrics.ConnectedCount})");
+    Console.WriteLine($"[+] {session.RemoteEndPoint}  state={session.State}  (sessions: {metrics.ConnectedCount})");
     return ValueTask.CompletedTask;
 };
 
@@ -80,3 +82,6 @@ while (true)
 cts.Cancel();
 listener.Stop();
 Console.WriteLine($"종료  total={metrics.TotalPacketsReceived}  final test={test}");
+
+// 세션에 부착할 커스텀 컨텍스트 예제
+record GameContext(int PlayerId = 0, string Nickname = "Guest");
