@@ -1,0 +1,41 @@
+using ServerLib.Interface;
+using Xunit;
+
+namespace ServerLib.Tests;
+
+public sealed class SessionStateTests
+{
+    [Fact]
+    public void SessionState_CustomValue_WorksCorrectly()
+    {
+        var custom = new SessionState(100);
+
+        Assert.Equal(100, custom.Value);
+        Assert.Equal("Custom(100)", custom.ToString());
+        Assert.NotEqual(SessionState.Connected, custom);
+    }
+
+    [Fact]
+    public void SessionState_PredefinedConstants_HaveExpectedValues()
+    {
+        Assert.Equal(0, SessionState.Connecting.Value);
+        Assert.Equal(1, SessionState.Connected.Value);
+        Assert.Equal(2, SessionState.Authenticated.Value);
+        Assert.Equal(3, SessionState.Disconnecting.Value);
+        Assert.Equal(4, SessionState.Disconnected.Value);
+    }
+
+    [Fact]
+    public void SessionState_ToString_ReturnsName()
+    {
+        Assert.Equal("Connecting", SessionState.Connecting.ToString());
+        Assert.Equal("Authenticated", SessionState.Authenticated.ToString());
+    }
+
+    [Fact]
+    public void SessionState_Equality_ComparesByValue()
+    {
+        Assert.True(SessionState.Connected == new SessionState(1));
+        Assert.True(SessionState.Connected != SessionState.Authenticated);
+    }
+}
