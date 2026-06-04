@@ -16,6 +16,8 @@ namespace ServerLib.Core;
 /// </remarks>
 public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
 {
+    // ConcurrentDictionary: 내부 버킷을 다중 락 스트라이프로 분할 → Register/Unregister(쓰기)와 조회(읽기)가 락 경합 없이 병행.
+    // TryGet/Count는 락-프리 읽기 경로라 hot path에서도 저비용.
     private readonly ConcurrentDictionary<Guid, ISession> _sessions = new();
 
     /// <inheritdoc/>
@@ -27,14 +29,17 @@ public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
 
     /// <inheritdoc/>
     public IReadOnlyCollection<ISession> GetAll()
+        // .ToArray() = 참조 스냅샷 깊은복사(요소 ISession 자체가 아닌 참조들을 새 배열로 복제).
+        // 열거 중 컬렉션이 바뀌어도 안전한 시점 일관성을 주지만 호출마다 배열 Alloc → hot path 반복 호출 금지.
         => _sessions.Values.ToArray();
 
     /// <inheritdoc/>
     public async ValueTask BroadcastAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
-        var snapshot = _sessions.Values.ToArray();
+        var snapshot = _sessions.Values.ToArray(); // 참조 스냅샷 깊은복사 — 전송 중 컬렉션 변경과 무관한 고정 대상 목록 확보
         if (snapshot.Length == 0) return;
 
+        // ArrayPool<ValueTask>.Rent: 진행 중 ValueTask들을 담을 임시 배열을 풀에서 대여 — 브로드캐스트마다 new ValueTask[]를 피해 Gen0 회피.
         var sends = ArrayPool<ValueTask>.Shared.Rent(snapshot.Length);
         try
         {
@@ -56,7 +61,9 @@ public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
         }
         finally
         {
-            Array.Clear(sends, 0, snapshot.Length); // IValueTaskSource 참조 해제
+            // Array.Clear: 풀 배열에 남은 ValueTask(내부 IValueTaskSource 참조)를 비워 반납 — 미정리 시 다음 대여자가 죽은 참조를 잡아
+            // 객체가 GC되지 못하는 누수가 생긴다(풀은 배열을 zero-fill하지 않으므로 수동 정리 필수).
+            Array.Clear(sends, 0, snapshot.Length);
             ArrayPool<ValueTask>.Shared.Return(sends);
         }
     }

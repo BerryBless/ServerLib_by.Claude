@@ -11,8 +11,10 @@ namespace ServerLib.Core.Serialization;
 /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서만 사용해야 합니다.
 /// <b>[Blocking:]</b> Non-blocking. 모든 연산이 동기 즉시 반환됩니다.
 /// </remarks>
+// ref struct: 스택 전용 — 힙 캡처·박싱·필드 저장이 금지되어 인코더 자체가 GC 대상이 되지 않는다(Alloc 0).
 public ref struct SpanWriter
 {
+    // Span은 호출자가 미리 확보한 목적지 버퍼를 가리키는 얕은 참조(lvalue 뷰) — 내부에서 새 버퍼를 만들지 않고 그 위에 직접 기록.
     private readonly Span<byte> _buffer;
     private int _position;
 
@@ -41,6 +43,8 @@ public ref struct SpanWriter
     /// <summary>2바이트 부호 있는 정수를 LittleEndian으로 기록합니다.</summary>
     public void WriteInt16(short value)
     {
+        // BinaryPrimitives.Write*: rvalue(value)를 lvalue 메모리(span)에 in-place로 직접 기록 — 박싱·임시 버퍼 없음.
+        // Slice는 얕은복사(부분 뷰)이므로 기록 위치만 가리킬 뿐 복제가 일어나지 않는다.
         BinaryPrimitives.WriteInt16LittleEndian(_buffer.Slice(_position), value);
         _position += 2;
     }
@@ -89,6 +93,8 @@ public ref struct SpanWriter
     /// </remarks>
     public void WriteBytes(ReadOnlySpan<byte> value)
     {
+        // CopyTo = 깊은복사: 원본 바이트를 목적지 버퍼로 실제 복제한다.
+        // 직렬화 결과는 호출자 버퍼가 독립적으로 소유해야 하므로, 슬라이스(얕은복사)가 아니라 내용 복제가 필요하다.
         value.CopyTo(_buffer.Slice(_position));
         _position += value.Length;
     }
@@ -103,11 +109,13 @@ public ref struct SpanWriter
     /// </remarks>
     public void WriteString(string value)
     {
+        // GetByteCount: 실제 인코딩 전에 UTF-8 바이트 수를 먼저 스캔(문자열 1회 순회). 길이 접두어 기록과 범위 검증에 필요.
         int byteCount = Encoding.UTF8.GetByteCount(value);
         if (byteCount > ushort.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(value), byteCount, "UTF-8 인코딩 바이트 길이가 65535를 초과합니다.");
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)byteCount);
         _position += 2;
+        // GetBytes(string, span): 임시 byte[] 할당 없이 목적지 span에 직접 인코딩(Alloc 0). 단 GetByteCount+GetBytes로 문자열을 2회 순회한다.
         Encoding.UTF8.GetBytes(value, _buffer.Slice(_position, byteCount));
         _position += byteCount;
     }
@@ -127,6 +135,7 @@ public ref struct SpanWriter
             throw new ArgumentOutOfRangeException(nameof(precomputedByteCount), precomputedByteCount, "UTF-8 인코딩 바이트 길이가 65535를 초과합니다.");
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)precomputedByteCount);
         _position += 2;
+        // precomputedByteCount를 받아 GetByteCount 스캔을 생략 → 문자열을 1회만 순회(GetBodySize 단계에서 이미 계산해 캐시한 값 재사용).
         Encoding.UTF8.GetBytes(value, _buffer.Slice(_position, precomputedByteCount));
         _position += precomputedByteCount;
     }

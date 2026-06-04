@@ -43,6 +43,8 @@ public ref struct SpanReader
     /// <summary>2바이트 부호 있는 정수를 LittleEndian으로 읽습니다.</summary>
     public short ReadInt16()
     {
+        // BinaryPrimitives.Read*: lvalue 메모리(span)를 복사 없이 in-place로 재해석해 값(rvalue)만 추출.
+        // Slice(_position) 또한 얕은복사(같은 메모리의 부분 뷰)이므로 중간 버퍼 할당이 전혀 없다.
         var value = BinaryPrimitives.ReadInt16LittleEndian(_buffer.Slice(_position));
         _position += 2;
         return value;
@@ -99,6 +101,8 @@ public ref struct SpanReader
     /// </remarks>
     public ReadOnlySpan<byte> ReadBytes(int length)
     {
+        // Slice = 얕은복사: 바이트를 복제하지 않고 원본 버퍼의 부분 뷰만 돌려준다(zero-copy).
+        // 반환 스팬은 원본 _buffer 수명에 종속되므로 보관하려면 호출자가 따로 깊은복사해야 한다.
         var span = _buffer.Slice(_position, length);
         _position += length;
         return span;
@@ -117,6 +121,8 @@ public ref struct SpanReader
     {
         ushort byteCount = BinaryPrimitives.ReadUInt16LittleEndian(_buffer.Slice(_position));
         _position += 2;
+        // Encoding.UTF8.GetString = Alloc: UTF-8 바이트를 디코딩해 새 string 객체를 힙에 생성한다(Gen0 압력).
+        // string은 불변 참조 타입이라 zero-copy가 불가능 — 이 메서드만 SpanReader에서 유일하게 할당이 발생한다.
         var value = Encoding.UTF8.GetString(_buffer.Slice(_position, byteCount));
         _position += byteCount;
         return value;

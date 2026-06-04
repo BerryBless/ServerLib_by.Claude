@@ -36,7 +36,11 @@ public sealed class BinaryPacketSerializer : IPacketSerializer
             throw new ArgumentException(
                 $"버퍼 길이({destination.Length})가 필요 크기({required})보다 작습니다.", nameof(destination));
         PacketPool.WriteHeader(destination, packet.PacketId, bodySize);
+        // Slice = 얕은복사: 헤더 뒤 본문 영역의 부분 뷰만 만들어 SpanWriter에 넘긴다(복제 없음).
+        // SpanWriter는 ref struct라 스택에만 생성(Alloc 0). ref writer로 넘기는 이유는 아래 packet.Serialize 참조.
         var writer = new SpanWriter(destination.Slice(PacketPool.HeaderSize, bodySize));
+        // ref 전달: ref struct는 값 복사 시 _position 진행 상태가 호출자에 반영되지 않는다.
+        // writer의 저장 위치(lvalue) 자체를 넘겨야 패킷이 쓴 만큼 position이 누적된다.
         packet.Serialize(ref writer);
         return required;
     }
@@ -57,9 +61,12 @@ public sealed class BinaryPacketSerializer : IPacketSerializer
         if (source.Length < PacketPool.HeaderSize)
             throw new ArgumentException(
                 $"버퍼 길이({source.Length})가 헤더 크기({PacketPool.HeaderSize})보다 작습니다.", nameof(source));
+        // Slice = 얕은복사: 헤더를 건너뛴 본문 뷰만 만들어 SpanReader(ref struct, 스택 전용)에 전달.
         var reader = new SpanReader(source.Slice(PacketPool.HeaderSize));
+        // new T(): T가 struct면 스택/인라인 생성으로 Alloc 0, class면 Gen0 힙 할당 1회.
+        // 제네릭 + where T:new() 제약으로 호출부가 타입을 고정하면 JIT가 struct 경로를 무할당으로 특수화한다.
         var packet = new T();
-        packet.Deserialize(ref reader);
+        packet.Deserialize(ref reader); // ref 전달: reader의 _position 진행을 호출자가 공유해야 하므로 lvalue 자체를 넘김
         return packet;
     }
 

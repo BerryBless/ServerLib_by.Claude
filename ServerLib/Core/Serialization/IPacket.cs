@@ -10,6 +10,9 @@ namespace ServerLib.Core.Serialization;
 /// <b>[Memory Allocation:]</b> 구현체가 ref struct 기반 <see cref="SpanWriter"/>/<see cref="SpanReader"/>를
 /// 사용하므로 직렬화 자체는 Zero-allocation입니다. 문자열 필드의 <c>ReadString</c>은 예외입니다.
 /// </remarks>
+// 구현체는 struct(무할당) 또는 class(역직렬화 시 힙 1회) 중 선택 — 빈번한 소형 패킷은 struct, 가변 문자열 패킷은 class가 보통 유리.
+// Serialize/Deserialize가 ref SpanWriter/SpanReader를 받는 이유: 이들은 ref struct라 값으로 복사하면 내부 _position 진행이
+// 호출자에 반영되지 않는다. 저장 위치(lvalue) 자체를 ref로 넘겨야 누적 쓰기/읽기 위치가 공유된다.
 public interface IPacket
 {
     /// <summary>

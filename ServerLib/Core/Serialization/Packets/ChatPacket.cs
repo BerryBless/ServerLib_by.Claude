@@ -6,6 +6,8 @@ namespace ServerLib.Core.Serialization.Packets;
 /// <summary>
 /// 채팅 메시지 패킷입니다. 송신자 이름과 내용 2개의 문자열을 포함합니다.
 /// </summary>
+// class 선택: 가변 길이 string 2개(참조 타입)를 담으므로 struct여도 무할당이 불가 — 어차피 힙 객체가 필요하다.
+// 역직렬화 시 new ChatPacket() 1회 + ReadString 2회 할당이 동반된다(struct 패킷과 본질적으로 다른 메모리 특성).
 public sealed class ChatPacket : IPacket
 {
     /// <summary>패킷 ID 상수입니다.</summary>
@@ -16,7 +18,7 @@ public sealed class ChatPacket : IPacket
 
     private string _sender = string.Empty;
     private string _content = string.Empty;
-    private int _senderBytes = -1;
+    private int _senderBytes = -1;  // UTF-8 바이트 수 캐시(-1=미계산) — setter에서 무효화. GetBodySize↔Serialize 이중 스캔 방지
     private int _contentBytes = -1;
 
     /// <summary>메시지를 보낸 플레이어 이름입니다.</summary>
@@ -55,6 +57,7 @@ public sealed class ChatPacket : IPacket
     /// <inheritdoc/>
     public void Deserialize(ref SpanReader reader)
     {
+        // ReadString = Alloc: 수신 버퍼(얕은 뷰)에서 새 string 2개를 깊은복사로 생성 — string은 불변이라 zero-copy 불가.
         Sender = reader.ReadString();
         Content = reader.ReadString();
     }
