@@ -20,6 +20,8 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 
 > 편의 오버로드: `session.SendAsync(packet)` (`PacketSendExtensions`, `ServerLib.Core.Serialization`) — `IPacket`을 직접 받아 직렬화·풀 버퍼 관리를 캡슐화한다. 송신 동기 완료 시 무할당. `IClientConnection`에도 동일 오버로드 제공. (hot loop는 1회 직렬화 후 `ReadOnlyMemory` 직접 송신이 유리.)
 
+> 컨텍스트 접근: `session.GetContext<T>()` / `session.TryGetContext<T>(out var ctx)` (`SessionContextExtensions`, `ServerLib.Core`) — `object? Context`를 캐스팅 없이 타입 안전하게 읽는다(미설정·불일치 시 default).
+
 ---
 
 ### `IServerListener` — TCP 서버 리스너

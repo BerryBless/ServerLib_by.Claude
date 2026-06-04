@@ -35,7 +35,9 @@ listener.OnClientConnected = session =>
 listener.OnClientDisconnected = session =>
 {
     metrics?.OnClientDisconnected();
-    Console.WriteLine($"[-] {session.RemoteEndPoint}  (sessions: {metrics?.ConnectedCount ?? 0})  test={Volatile.Read(ref test)}");
+    // E2: 부착해 둔 컨텍스트를 캐스팅 없이 타입 안전하게 되읽는다.
+    var nick = session.GetContext<GameContext>()?.Nickname ?? "?";
+    Console.WriteLine($"[-] {session.RemoteEndPoint}  nick={nick}  (sessions: {metrics?.ConnectedCount ?? 0})  test={Volatile.Read(ref test)}");
     return ValueTask.CompletedTask;
 };
 
