@@ -13,9 +13,40 @@ public sealed class SocketPipelineListener : IServerListener
     private readonly ConcurrentDictionary<Guid, ISession> _activeSessions = new();
 
     public bool IsRunning => _listenSocket != null;
-    public Func<ISession, ValueTask>? OnClientConnected { get; set; }
-    public Func<ISession, ValueTask>? OnClientDisconnected { get; set; }
-    public Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
+
+    // E3: 콜백은 Start() 전에만 설정 — IO 루프 가동 중 재할당을 막아 가시성/동작 일관성 보장(IdleTimeout 가드와 동일 패턴).
+    private Func<ISession, ValueTask>? _onClientConnected;
+    public Func<ISession, ValueTask>? OnClientConnected
+    {
+        get => _onClientConnected;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("OnClientConnected는 Start() 호출 전에만 설정할 수 있습니다.");
+            _onClientConnected = value;
+        }
+    }
+
+    private Func<ISession, ValueTask>? _onClientDisconnected;
+    public Func<ISession, ValueTask>? OnClientDisconnected
+    {
+        get => _onClientDisconnected;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("OnClientDisconnected는 Start() 호출 전에만 설정할 수 있습니다.");
+            _onClientDisconnected = value;
+        }
+    }
+
+    private Func<ISession, ReadOnlyMemory<byte>, ValueTask>? _onReceived;
+    public Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived
+    {
+        get => _onReceived;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("OnReceived는 Start() 호출 전에만 설정할 수 있습니다.");
+            _onReceived = value;
+        }
+    }
     private TimeSpan? _idleTimeout;
     public TimeSpan? IdleTimeout
     {
@@ -27,7 +58,16 @@ public sealed class SocketPipelineListener : IServerListener
             _idleTimeout = value;
         }
     }
-    public Func<ISession, ValueTask>? OnIdleTimeout { get; set; }
+    private Func<ISession, ValueTask>? _onIdleTimeout;
+    public Func<ISession, ValueTask>? OnIdleTimeout
+    {
+        get => _onIdleTimeout;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("OnIdleTimeout은 Start() 호출 전에만 설정할 수 있습니다.");
+            _onIdleTimeout = value;
+        }
+    }
 
     /// <summary>새로 수락되는 각 세션에 적용할 송신 타임아웃입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
     /// <remarks>

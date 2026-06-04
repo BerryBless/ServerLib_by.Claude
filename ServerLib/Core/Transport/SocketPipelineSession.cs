@@ -20,6 +20,7 @@ public sealed class SocketPipelineSession : ISession
     private readonly Pipe _pipe;
     private readonly CancellationTokenSource _cts = new();
     private int _disposed;
+    private bool _receiving; // StartReceiving 이후 true — 콜백 재설정 차단(콜백은 수신 시작 전에 배선되어야 함)
     private long _lastReceivedAtTicks;
     private int _state = SessionState.Connecting.Value;
     private object? _context;
@@ -42,8 +43,28 @@ public sealed class SocketPipelineSession : ISession
         set => Volatile.Write(ref _context, value);
     }
 
-    public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
-    public Func<ValueTask>? OnDisconnected { get; set; }
+    // E3: 콜백은 StartReceiving() 전에만 설정 — 라이브러리(Listener)가 수신 시작 전에 배선하며, 이후 재할당은 차단된다.
+    private Func<ReadOnlyMemory<byte>, ValueTask>? _onReceived;
+    public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived
+    {
+        get => _onReceived;
+        set
+        {
+            if (_receiving) throw new InvalidOperationException("OnReceived는 StartReceiving() 호출 전에만 설정할 수 있습니다.");
+            _onReceived = value;
+        }
+    }
+
+    private Func<ValueTask>? _onDisconnected;
+    public Func<ValueTask>? OnDisconnected
+    {
+        get => _onDisconnected;
+        set
+        {
+            if (_receiving) throw new InvalidOperationException("OnDisconnected는 StartReceiving() 호출 전에만 설정할 수 있습니다.");
+            _onDisconnected = value;
+        }
+    }
 
     /// <summary>송신 1건의 최대 허용 시간입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
     /// <remarks>
@@ -87,6 +108,7 @@ public sealed class SocketPipelineSession : ISession
 
     public void StartReceiving()
     {
+        _receiving = true; // 이후 콜백 재설정 차단(콜백은 StartReceiving 전에 배선되어야 함)
         // fill/read 두 루프는 각자 _cts로 수명·취소를 관리하므로 await 없이 분리 구동(fire-and-forget)해도 안전
         _ = FillPipeAsync(_cts.Token);
         _ = ReadPipeAsync(_cts.Token);

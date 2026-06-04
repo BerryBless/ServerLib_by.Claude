@@ -117,6 +117,8 @@ public interface ISession : IAsyncDisposable
     /// <br/><br/>
     /// <b>[Memory Allocation:]</b> 단일 세그먼트 수신의 경우 Zero-allocation이 보장됩니다.
     /// 분산 세그먼트(Scatter) 수신 시 <see cref="System.Buffers.ArrayPool{T}"/> 임시 버퍼로 병합됩니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> 세션 수신 시작 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다. (서버 라이브러리가 수신 시작 전에 배선합니다.)
     /// </remarks>
     Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
 
@@ -129,6 +131,8 @@ public interface ISession : IAsyncDisposable
     /// <br/><br/>
     /// <b>[Guarantee:]</b> 세션 생명주기 동안 정확히 1회만 호출됩니다.
     /// <see cref="DisposeAsync"/>가 먼저 호출된 경우에도 발화되지 않을 수 있습니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> 세션 수신 시작 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ValueTask>? OnDisconnected { get; set; }
 

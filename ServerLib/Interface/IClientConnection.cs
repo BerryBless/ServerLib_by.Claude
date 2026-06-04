@@ -58,6 +58,8 @@ public interface IClientConnection : IAsyncDisposable
     /// <br/><br/>
     /// <b>[Guarantee:]</b> <see cref="OnDisconnected"/>보다 항상 먼저 발화됩니다.
     /// 연결 실패 시에는 발화되지 않습니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="ConnectAsync"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ValueTask>? OnConnected { get; set; }
 
@@ -69,6 +71,8 @@ public interface IClientConnection : IAsyncDisposable
     /// <br/><br/>
     /// <b>[Guarantee:]</b> 연결 수립 후 반드시 1회 호출됩니다.
     /// <see cref="DisposeAsync"/>가 먼저 호출된 경우에도 발화될 수 있습니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="ConnectAsync"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ValueTask>? OnDisconnected { get; set; }
 
@@ -85,6 +89,8 @@ public interface IClientConnection : IAsyncDisposable
     /// <br/><br/>
     /// <b>[Memory Allocation:]</b> 단일 세그먼트 수신 시 Zero-allocation 보장.
     /// 분산 세그먼트 수신 시 <see cref="System.Buffers.ArrayPool{T}"/> 임시 버퍼 1회 할당.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="ConnectAsync"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
 

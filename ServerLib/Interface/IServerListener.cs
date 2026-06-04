@@ -32,6 +32,8 @@ public interface IServerListener
     /// <b>[Memory Allocation:]</b> Zero-allocation. 전달되는 <see cref="ISession"/>은 이미 생성된 객체입니다.
     /// <br/><br/>
     /// <b>[Guarantee:]</b> <see cref="OnClientDisconnected"/>보다 항상 먼저 발화됩니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ISession, ValueTask>? OnClientConnected { get; set; }
 
@@ -43,6 +45,8 @@ public interface IServerListener
     /// <br/><br/>
     /// <b>[Guarantee:]</b> 세션당 정확히 1회 호출됩니다. 이 콜백 반환 후 <see cref="ISession"/>은 해제됩니다.
     /// 콜백 내부에서 세션 참조를 캐싱한 경우 반드시 제거해야 합니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ISession, ValueTask>? OnClientDisconnected { get; set; }
 
@@ -58,6 +62,8 @@ public interface IServerListener
     /// 콜백 범위를 벗어나 데이터를 보관하려면 반드시 복사해야 합니다.
     /// <br/><br/>
     /// <b>[Memory Allocation:]</b> 단일 세그먼트 수신 시 Zero-allocation 보장.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
     Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
 
@@ -89,6 +95,7 @@ public interface IServerListener
     /// <item><description><b>Thread Context:</b> 스윕 루프 내부 스레드에서 호출됩니다. 동기 블로킹 금지.</description></item>
     /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
     /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// <item><description><b>설정 시점:</b> <see cref="Start"/>() 호출 전에만 설정 가능; 이후 <see cref="InvalidOperationException"/>.</description></item>
     /// </list>
     /// </remarks>
     Func<ISession, ValueTask>? OnIdleTimeout { get; set; }

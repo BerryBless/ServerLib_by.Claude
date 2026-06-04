@@ -20,6 +20,7 @@ public sealed class SocketPipelineClient : IClientConnection
     private Pipe? _pipe;
     private CancellationTokenSource? _cts;
     private int _disposed;
+    private bool _started; // ConnectAsync 진입 후 true — 콜백 재설정 차단(단일 셋업 스레드에서만 접근)
     private long _rttTicks; // 마지막 RTT(ticks) — Volatile로 갱신/읽기
     // SemaphoreSlim: 송신 경로 직렬화 — 커널 전환 없이 스핀 후 관리형 대기로 전환하는 경량 게이트.
     // PING 루프와 앱 SendAsync가 동일 소켓에 동시 기록하는 것을 막아 Thread-safe 계약을 보장한다.
@@ -42,13 +43,44 @@ public sealed class SocketPipelineClient : IClientConnection
     public TimeSpan? SendTimeout { get; set; }
     // Volatile.Read: 수신 루프(writer)와 앱(reader) 간 최신 RTT 가시성 보장
     public TimeSpan Rtt => new TimeSpan(Volatile.Read(ref _rttTicks));
-    public Func<ValueTask>? OnConnected { get; set; }
-    public Func<ValueTask>? OnDisconnected { get; set; }
-    public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
+    // E3: 콜백은 ConnectAsync() 전에만 설정 — 연결 후 재할당을 막아 수신 루프 가시성/일관성 보장.
+    private Func<ValueTask>? _onConnected;
+    public Func<ValueTask>? OnConnected
+    {
+        get => _onConnected;
+        set
+        {
+            if (_started) throw new InvalidOperationException("OnConnected는 ConnectAsync() 호출 전에만 설정할 수 있습니다.");
+            _onConnected = value;
+        }
+    }
+
+    private Func<ValueTask>? _onDisconnected;
+    public Func<ValueTask>? OnDisconnected
+    {
+        get => _onDisconnected;
+        set
+        {
+            if (_started) throw new InvalidOperationException("OnDisconnected는 ConnectAsync() 호출 전에만 설정할 수 있습니다.");
+            _onDisconnected = value;
+        }
+    }
+
+    private Func<ReadOnlyMemory<byte>, ValueTask>? _onReceived;
+    public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived
+    {
+        get => _onReceived;
+        set
+        {
+            if (_started) throw new InvalidOperationException("OnReceived는 ConnectAsync() 호출 전에만 설정할 수 있습니다.");
+            _onReceived = value;
+        }
+    }
 
     public async Task ConnectAsync(string host, int port, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
+        _started = true; // 이후 콜백 재설정 차단
 
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         _socket.NoDelay = true;  // Nagle 알고리즘 비활성화 — 소량 실시간 패킷의 ~200ms 지연 방지 (클라이언트도 저지연 필수)
