@@ -75,4 +75,32 @@ public sealed class SessionStateTests
         Assert.True(result);
         Assert.Equal(SessionState.Authenticated, stub.State);
     }
+
+    [Fact]
+    public void Session_TransitionTo_FromDisconnected_IsRejected()
+    {
+        var stub = new StubSession();
+        stub.TransitionTo(SessionState.Disconnected);
+
+        // 종착 상태에서 다른 상태로의 부활 시도는 거부되어야 한다.
+        bool result = stub.TransitionTo(SessionState.Authenticated);
+
+        Assert.False(result);
+        Assert.Equal(SessionState.Disconnected, stub.State);
+    }
+
+    [Fact]
+    public void SessionState_Custom_BelowReservedRange_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => SessionState.Custom(4));
+    }
+
+    [Fact]
+    public void SessionState_Custom_AboveReservedRange_Succeeds()
+    {
+        var custom = SessionState.Custom(100);
+
+        Assert.Equal(100, custom.Value);
+        Assert.Equal("Custom(100)", custom.ToString());
+    }
 }

@@ -75,11 +75,14 @@ public interface ISession : IAsyncDisposable
     /// 세션 상태를 새 상태로 전환합니다.
     /// </summary>
     /// <param name="newState">전환할 새 상태</param>
-    /// <returns>전환이 적용되면 <see langword="true"/> (현재 구현은 항상 true).</returns>
+    /// <returns>
+    /// 전환이 적용되면 <see langword="true"/>. 세션이 이미 종착 상태(<see cref="SessionState.Disconnected"/>)이면
+    /// 부활을 막기 위해 전환을 거부하고 <see langword="false"/>를 반환합니다.
+    /// </returns>
     /// <remarks>
     /// <b>[성능 및 동시성 제약 조건]</b>
     /// <list type="bullet">
-    /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile.Write로 원자적 갱신합니다.</description></item>
+    /// <item><description><b>Thread Safety:</b> Thread-safe. CAS(Interlocked.CompareExchange)로 원자적 전환하여 동시 호출 시에도 종착 상태를 보존합니다.</description></item>
     /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
     /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
     /// </list>
@@ -93,8 +96,9 @@ public interface ISession : IAsyncDisposable
     /// <b>[성능 및 동시성 제약 조건]</b>
     /// <list type="bullet">
     /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile read/write로 참조를 원자적으로 갱신합니다.</description></item>
-    /// <item><description><b>Memory Allocation:</b> Zero-allocation (참조만 저장, 박싱 없음).</description></item>
+    /// <item><description><b>Memory Allocation:</b> 참조 타입 할당 시 Zero-allocation. 단, 값 타입(struct/int 등)을 할당하면 박싱이 발생하므로 hot path에서는 반드시 참조 타입(class/record) 컨텍스트를 사용하십시오.</description></item>
     /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// <item><description><b>생명주기:</b> 세션이 해제(<see cref="IAsyncDisposable.DisposeAsync"/>)될 때 라이브러리가 참조를 <see langword="null"/>로 비웁니다. 컨텍스트에 담긴 민감 데이터(토큰·키 등)의 zeroize는 호출자 책임입니다.</description></item>
     /// </list>
     /// </remarks>
     object? Context { get; set; }

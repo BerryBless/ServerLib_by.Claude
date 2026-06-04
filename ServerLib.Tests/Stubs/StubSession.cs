@@ -20,6 +20,8 @@ internal sealed class StubSession : ISession
 
     public bool TransitionTo(SessionState newState)
     {
+        // 프로덕션 SocketPipelineSession과 동일하게 Disconnected는 종착 상태로 취급한다.
+        if (State == SessionState.Disconnected) return false;
         State = newState;
         return true;
     }

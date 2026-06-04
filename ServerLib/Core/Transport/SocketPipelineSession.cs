@@ -46,8 +46,18 @@ public sealed class SocketPipelineSession : ISession
 
     public bool TransitionTo(SessionState newState)
     {
-        Volatile.Write(ref _state, newState.Value);
-        return true;
+        // Disconnected는 종착 상태다. 이미 해제된 세션의 부활(예: Disconnected→Authenticated)을 막는다.
+        // CAS로 원자적 전환하여 IO 스레드(Disconnected)와 사용자 스레드(Authenticated 등)의 경쟁에서
+        // 종착 상태가 덮어써지지 않도록 보존한다.
+        int target = newState.Value;
+        while (true)
+        {
+            int current = Volatile.Read(ref _state);
+            if (current == SessionState.Disconnected.Value)
+                return false; // 종착 상태 — 전환 거부
+            if (Interlocked.CompareExchange(ref _state, target, current) == current)
+                return true;
+        }
     }
 
     public void StartReceiving()
@@ -185,5 +195,6 @@ public sealed class SocketPipelineSession : ISession
         await _cts.CancelAsync();
         _socket.Dispose();
         _cts.Dispose();
+        Volatile.Write(ref _context, null); // 민감 데이터 잔류 방지 (CWE-212/459) — 사용자 컨텍스트 참조 해제
     }
 }
