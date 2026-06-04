@@ -96,6 +96,28 @@ plan/<기능명>_<MMDD>.md
 bool OnPacketReceived(long sessionId, ReadOnlySpan<byte> packetBuffer);
 ```
 
+### 네트워크·메모리 관련 선언부 인라인 주석 규칙
+
+네트워크 또는 메모리 관련 **함수·변수·필드를 선언할 때**는, 그것을 선택한 이유를 반드시 **해당 타입/API의 내부 동작**을 근거로 인라인 주석(`//`)으로 달아야 한다.
+
+- 대상: `Socket`, `Pipe`, `PipeReader/Writer`, `Channel<T>`, `ArrayPool<T>`, `MemoryPool<T>`, `IMemoryOwner<T>`, `Memory<T>`, `Span<T>`, `NetworkStream`, `SocketAsyncEventArgs`, `ValueTask`, `SemaphoreSlim`, `ConcurrentQueue/Dictionary` 등 네트워크·메모리 관련 모든 타입의 선언
+- 주석 내용: "왜 이 타입/API를 골랐는가" → 반드시 **내부 동작 메커니즘**을 이유로 삼을 것 (단순 기능 설명 금지)
+
+**예시:**
+
+```csharp
+// Channel<T>: lock-free MPSC 큐로 구현되어 있어 다수 IO 스레드 → 단일 디스패처 경로에서 락 경합 없이 메시지를 전달
+private readonly Channel<IPacket> _dispatchChannel = Channel.CreateUnbounded<IPacket>();
+
+// ArrayPool<byte>.Shared: 고정 크기 버킷 풀로 TLS(Thread-Local Storage) 슬롯을 우선 확인하므로
+// 동일 스레드에서 반환·재사용 시 힙 할당 없이 O(1) 반환
+private readonly byte[] _recvBuffer = ArrayPool<byte>.Shared.Rent(4096);
+
+// SemaphoreSlim: 커널 전환 없이 스핀-대기 후 관리형 대기로 전환하는 경량 세마포어.
+// 짧은 임계 구간에서 Mutex보다 컨텍스트 스위치 비용이 낮아 고빈도 송신 제한에 적합
+private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
+```
+
 ---
 
 ## 하네스: 종합 코드 리뷰

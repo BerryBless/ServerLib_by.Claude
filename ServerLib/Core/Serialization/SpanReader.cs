@@ -12,8 +12,11 @@ namespace ServerLib.Core.Serialization;
 /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서만 사용해야 합니다.
 /// <b>[Blocking:]</b> Non-blocking.
 /// </remarks>
+// ref struct: 스택 전용 타입 — 힙 캡처·박싱·필드 저장·async/람다 캡처가 컴파일 단계에서 금지된다.
+// 덕분에 SpanReader 인스턴스 자체는 절대 GC 대상이 되지 않으며(Alloc 0), 디코딩이 hot path에서 무할당으로 동작한다.
 public ref struct SpanReader
 {
+    // ReadOnlySpan은 원본 버퍼를 가리키는 얕은 참조(zero-copy 뷰)다 — 바이트를 복제하지 않고 그 위에서 직접 읽는다.
     private readonly ReadOnlySpan<byte> _buffer;
     private int _position;
 
