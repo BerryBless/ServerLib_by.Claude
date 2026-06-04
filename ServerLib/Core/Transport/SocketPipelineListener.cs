@@ -29,6 +29,14 @@ public sealed class SocketPipelineListener : IServerListener
     }
     public Func<ISession, ValueTask>? OnIdleTimeout { get; set; }
 
+    /// <summary>새로 수락되는 각 세션에 적용할 송신 타임아웃입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
+    /// <remarks>
+    /// 응답하지 않는(수신 버퍼를 비우지 않는) 피어로 인해 세션의 <see cref="ISession.SendAsync"/>가 무한 블록되어
+    /// 송신 게이트를 영구 점유하고 <see cref="ISessionRegistry.BroadcastAsync"/>가 정지하는 것을 방지합니다.
+    /// 이미 수락된 세션에는 소급 적용되지 않으며, 이후 수락되는 세션부터 반영됩니다.
+    /// </remarks>
+    public TimeSpan? SessionSendTimeout { get; set; }
+
     public SocketPipelineListener(ISessionRegistrar? registrar = null)
     {
         _registrar = registrar;
@@ -139,7 +147,7 @@ public sealed class SocketPipelineListener : IServerListener
                 // AcceptAsync: 커널 큐의 다음 연결을 비동기 대기 — 동기 Accept()와 달리 스레드풀 스레드를 점유하지 않음
                 var clientSocket = await _listenSocket!.AcceptAsync(ct);
                 ConfigureSocket(clientSocket);
-                var session = new SocketPipelineSession(clientSocket);
+                var session = new SocketPipelineSession(clientSocket) { SendTimeout = SessionSendTimeout };
                 session.OnReceived = data => OnReceived?.Invoke(session, data) ?? ValueTask.CompletedTask;
                 session.OnDisconnected = async () =>
                 {

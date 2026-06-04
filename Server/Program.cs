@@ -16,6 +16,9 @@ var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 var registry = cfg.Features.EnableSessionRegistry ? new SessionRegistry() : null;
 var metrics = cfg.Features.EnableMetrics ? new ServerMetrics() : null;
 var listener = new SocketPipelineListener(registry);
+// 송신 타임아웃: 수신을 멈춘(죽은) 피어가 송신 게이트를 영구 점유해 BroadcastAsync 전체를 정지시키는 것을 방지.
+// 시한 초과 시 해당 세션 송신만 SocketException(TimedOut)으로 끊기고 나머지 브로드캐스트는 계속 진행된다.
+listener.SessionSendTimeout = TimeSpan.FromSeconds(30);
 
 var test = 0;
 long windowPackets = 0;

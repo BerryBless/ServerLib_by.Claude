@@ -65,6 +65,7 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
     long total = 0;
 
     await using var conn = new SocketPipelineClient();
+    conn.SendTimeout = TimeSpan.FromSeconds(30); // 응답불능 서버로 인한 송신 무한 블록 방지(시한 초과 시 SocketException(TimedOut))
     if (cfg.Features.EnableHeartbeat)
         conn.PingInterval = TimeSpan.FromSeconds(cfg.PingIntervalSeconds); // 자동 PING → RTT 측정
     conn.OnConnected = () =>

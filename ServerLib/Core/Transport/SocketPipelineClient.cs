@@ -11,6 +11,11 @@ public sealed class SocketPipelineClient : IClientConnection
 {
     private static readonly int MinBufferSize = 4096;
 
+    // PipeOptions(useSynchronizationContext:false): 클라이언트는 특히 위험하다 — ConnectAsync를 UI 스레드에서 await하면
+    // 기본값(true)에서 FillPipe/ReadPipe의 모든 continuation이 그 UI 스레드에 고정되어 데드락한다(ConfigureAwait로는 못 막음).
+    // continuation을 ThreadPool에서 실행하도록 강제. 전 연결 공유라 static readonly 1회 생성.
+    private static readonly PipeOptions s_pipeOptions = new(useSynchronizationContext: false);
+
     private Socket? _socket;
     private Pipe? _pipe;
     private CancellationTokenSource? _cts;
@@ -22,6 +27,19 @@ public sealed class SocketPipelineClient : IClientConnection
 
     public bool IsConnected => _socket?.Connected ?? false;
     public TimeSpan? PingInterval { get; set; }
+
+    /// <summary>송신 1건의 최대 허용 시간입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>목적:</b> 수신 버퍼를 비우지 않는(응답불능) 서버로 인해 <see cref="SendAsync"/>가 무한 블록되어
+    /// 송신 게이트를 영구 점유하고 PING 루프·앱 송신이 모두 정지하는 것을 방지합니다.</description></item>
+    /// <item><description><b>동작:</b> 시한 초과 시 <see cref="System.Net.Sockets.SocketException"/>(<see cref="System.Net.Sockets.SocketError.TimedOut"/>)을 throw합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> <see langword="null"/>(기본)일 때 송신 경로 Zero-allocation 유지. 설정 시에만 송신당 <see cref="CancellationTokenSource"/> 1개를 할당합니다.</description></item>
+    /// <item><description><b>Thread Safety:</b> Thread-safe(단순 참조 읽기/쓰기).</description></item>
+    /// </list>
+    /// </remarks>
+    public TimeSpan? SendTimeout { get; set; }
     // Volatile.Read: 수신 루프(writer)와 앱(reader) 간 최신 RTT 가시성 보장
     public TimeSpan Rtt => new TimeSpan(Volatile.Read(ref _rttTicks));
     public Func<ValueTask>? OnConnected { get; set; }
@@ -38,7 +56,7 @@ public sealed class SocketPipelineClient : IClientConnection
         // ConnectAsync: DNS 해석(호스트명일 때)+TCP 3-way 핸드셰이크를 비동기로 — 동기 Connect()의 스레드 블로킹 회피
         await _socket.ConnectAsync(host, port, cancellationToken);
 
-        _pipe = new Pipe();
+        _pipe = new Pipe(s_pipeOptions);
         _cts = new CancellationTokenSource();
 
         // fill/read 두 루프는 _cts로 자체 수명·취소를 관리하므로 await 없이 분리 구동(fire-and-forget)
@@ -200,8 +218,28 @@ public sealed class SocketPipelineClient : IClientConnection
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
         if (_socket == null) throw new InvalidOperationException("Not connected.");
         // 게이트로 송신을 직렬화: 동일 소켓에 대한 중첩 SendAsync(겹침)는 미지원이므로 한 번에 하나만 기록
-        await _sendGate.WaitAsync(cancellationToken);
-        try { await _socket.SendAsync(data, SocketFlags.None, cancellationToken); }
+        await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var timeout = SendTimeout;
+            if (timeout is null)
+            {
+                await _socket.SendAsync(data, SocketFlags.None, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                // CancellationTokenSource: 송신당 시한. 기본 경로(timeout=null)는 CTS를 만들지 않아 무할당 유지.
+                // 응답불능 서버가 게이트를 영구 점유하는 것을 시한으로 차단. caller 토큰이 취소 가능할 때만 링크.
+                using var cts = cancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                    : new CancellationTokenSource();
+                cts.CancelAfter(timeout.Value);
+                try { await _socket.SendAsync(data, SocketFlags.None, cts.Token).ConfigureAwait(false); }
+                // 내부 시한 만료(caller 취소가 아님)는 SocketException(TimedOut)으로 변환 → PING 루프 등 호출부의 SocketException 처리와 일관.
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                { throw new SocketException((int)SocketError.TimedOut); }
+            }
+        }
         finally { _sendGate.Release(); }
     }
 
@@ -216,7 +254,8 @@ public sealed class SocketPipelineClient : IClientConnection
         // Interlocked.Exchange: 이전 값을 원자적으로 반환 → 첫 호출자만 진행, 이후 호출은 즉시 반환(멱등 Dispose)
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-        if (_cts != null) await _cts.CancelAsync();
+        // ConfigureAwait(false): 호출자가 SyncContext 있는 스레드에서 DisposeAsync를 동기 대기할 경우의 데드락 회피.
+        if (_cts != null) await _cts.CancelAsync().ConfigureAwait(false);
         _socket?.Dispose();
         _cts?.Dispose();
         _sendGate.Dispose();

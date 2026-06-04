@@ -11,6 +11,11 @@ public sealed class SocketPipelineSession : ISession
 {
     private static readonly int MinBufferSize = 4096;
 
+    // PipeOptions(useSynchronizationContext:false): FlushAsync/ReadAsync의 continuation을 캡처된 SynchronizationContext가 아닌
+    // ThreadPool에서 실행한다. 기본값(true)이면 호출자가 SyncContext 있는 스레드에서 구동 시 IO continuation이 그 스레드에 고정되어
+    // 데드락 위험이 생긴다(ConfigureAwait로는 못 막음 — 스케줄링은 Pipe가 제어). 전 세션 공유라 static readonly 1회 생성.
+    private static readonly PipeOptions s_pipeOptions = new(useSynchronizationContext: false);
+
     private readonly Socket _socket;
     private readonly Pipe _pipe;
     private readonly CancellationTokenSource _cts = new();
@@ -40,11 +45,26 @@ public sealed class SocketPipelineSession : ISession
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
 
+    /// <summary>송신 1건의 최대 허용 시간입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>목적:</b> 수신 버퍼를 비우지 않는(죽은/응답불능) 피어로 인해 <see cref="SendAsync"/>가
+    /// 무한 블록되어 송신 게이트를 영구 점유하고 <see cref="SessionRegistry.BroadcastAsync"/> 전체를 정지시키는 것을 방지합니다.</description></item>
+    /// <item><description><b>동작:</b> 시한 초과 시 <see cref="System.Net.Sockets.SocketException"/>(<see cref="System.Net.Sockets.SocketError.TimedOut"/>)을
+    /// throw합니다. 호출자의 명시적 취소(<see cref="OperationCanceledException"/>)와 구분되며, BroadcastAsync 등 호출부의 SocketException 처리와 일관됩니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> <see langword="null"/>(기본)일 때 송신 경로 Zero-allocation 유지.
+    /// 설정 시에만 송신당 <see cref="CancellationTokenSource"/> 1개를 할당합니다(항상-무할당이 필요하면 세션별 송신 큐로 후속 최적화 가능).</description></item>
+    /// <item><description><b>Thread Safety:</b> Thread-safe(단순 참조 읽기/쓰기). <see cref="StartReceiving"/> 전후 어느 시점에든 설정 가능합니다.</description></item>
+    /// </list>
+    /// </remarks>
+    public TimeSpan? SendTimeout { get; set; }
+
     public SocketPipelineSession(Socket socket)
     {
         _socket = socket;
         RemoteEndPoint = socket.RemoteEndPoint;
-        _pipe = new Pipe();
+        _pipe = new Pipe(s_pipeOptions);
         var now = DateTimeOffset.UtcNow;
         _lastReceivedAtTicks = now.UtcTicks;
     }
@@ -231,8 +251,29 @@ public sealed class SocketPipelineSession : ISession
         // Volatile.Read: DisposeAsync와 동시 호출 경합 시 해제 플래그의 최신값을 관찰
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
         // 게이트로 송신을 직렬화: 자동 PONG 회신과 앱 송신이 동일 소켓에 겹쳐 기록되지 않도록 한 번에 하나만
-        await _sendGate.WaitAsync(cancellationToken);
-        try { await _socket.SendAsync(data, SocketFlags.None, cancellationToken); }
+        await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var timeout = SendTimeout;
+            if (timeout is null)
+            {
+                await _socket.SendAsync(data, SocketFlags.None, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                // CancellationTokenSource: 송신당 시한. 기본 경로(timeout=null)는 CTS를 만들지 않아 무할당 유지.
+                // caller 토큰이 취소 가능할 때만 링크(드문 경로) — 죽은 피어가 게이트를 영구 점유하는 것을 시한으로 차단.
+                using var cts = cancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                    : new CancellationTokenSource();
+                cts.CancelAfter(timeout.Value);
+                try { await _socket.SendAsync(data, SocketFlags.None, cts.Token).ConfigureAwait(false); }
+                // 내부 시한 만료(caller 취소가 아님)는 SocketException(TimedOut)으로 변환 → BroadcastAsync 등 호출부의
+                // SocketException 처리와 일관되게 하여 죽은 피어만 끊고 브로드캐스트 전체는 계속 진행되도록 한다.
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                { throw new SocketException((int)SocketError.TimedOut); }
+            }
+        }
         finally { _sendGate.Release(); }
     }
 
@@ -241,7 +282,9 @@ public sealed class SocketPipelineSession : ISession
         // Interlocked.Exchange: 이전 값을 원자적으로 반환 → 첫 호출자만 진행, 이후 호출은 즉시 반환(멱등 Dispose)
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-        await _cts.CancelAsync();
+        // ConfigureAwait(false): Stop()이 sync-over-async(GetAwaiter().GetResult())로 이 메서드를 블록하므로,
+        // continuation을 캡처된 SyncContext로 되돌리면 이미 블록된 스레드와 데드락한다 → ThreadPool 재개로 회피.
+        await _cts.CancelAsync().ConfigureAwait(false);
         _socket.Dispose();
         _cts.Dispose();
         Volatile.Write(ref _context, null); // 민감 데이터 잔류 방지 (CWE-212/459) — 사용자 컨텍스트 참조 해제
