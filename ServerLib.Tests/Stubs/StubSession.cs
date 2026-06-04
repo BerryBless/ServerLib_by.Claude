@@ -10,11 +10,19 @@ internal sealed class StubSession : ISession
     public EndPoint? RemoteEndPoint => null;
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastReceivedAt { get; set; } = DateTimeOffset.UtcNow;
+    public SessionState State { get; private set; } = SessionState.Connecting;
+    public object? Context { get; set; }
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
     public bool ThrowOnSend { get; init; }
     public ConcurrentQueue<byte[]> SentBuffers { get; } = new();
     public bool WasDisposed { get; private set; }
+
+    public bool TransitionTo(SessionState newState)
+    {
+        State = newState;
+        return true;
+    }
 
     public ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {

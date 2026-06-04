@@ -59,6 +59,47 @@ public interface ISession : IAsyncDisposable
     DateTimeOffset LastReceivedAt { get; }
 
     /// <summary>
+    /// 현재 세션의 생명주기 상태입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile read로 최신값을 반환합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation (값 타입).</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
+    /// </list>
+    /// </remarks>
+    SessionState State { get; }
+
+    /// <summary>
+    /// 세션 상태를 새 상태로 전환합니다.
+    /// </summary>
+    /// <param name="newState">전환할 새 상태</param>
+    /// <returns>전환이 적용되면 <see langword="true"/> (현재 구현은 항상 true).</returns>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile.Write로 원자적 갱신합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
+    /// </list>
+    /// </remarks>
+    bool TransitionTo(SessionState newState);
+
+    /// <summary>
+    /// 세션에 부착된 단일 사용자 컨텍스트 객체입니다. 사용자가 직접 클래스를 정의하여 할당하며, 읽을 때 캐스팅이 필요합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile read/write로 참조를 원자적으로 갱신합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation (참조만 저장, 박싱 없음).</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// </list>
+    /// </remarks>
+    object? Context { get; set; }
+
+    /// <summary>
     /// 원격 클라이언트로부터 데이터가 수신될 때 호출되는 콜백입니다.
     /// </summary>
     /// <remarks>

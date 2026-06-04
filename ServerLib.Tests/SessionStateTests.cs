@@ -1,4 +1,5 @@
 using ServerLib.Interface;
+using ServerLib.Tests.Stubs;
 using Xunit;
 
 namespace ServerLib.Tests;
@@ -37,5 +38,23 @@ public sealed class SessionStateTests
     {
         Assert.True(SessionState.Connected == new SessionState(1));
         Assert.True(SessionState.Connected != SessionState.Authenticated);
+    }
+
+    [Fact]
+    public void StubSession_Context_SetAndGet_ReturnsSameReference()
+    {
+        var stub = new StubSession();
+        var payload = new object();
+
+        stub.Context = payload;
+
+        Assert.Same(payload, stub.Context);
+    }
+
+    [Fact]
+    public void StubSession_Context_Default_IsNull()
+    {
+        var stub = new StubSession();
+        Assert.Null(stub.Context);
     }
 }

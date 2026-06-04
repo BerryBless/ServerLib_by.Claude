@@ -16,11 +16,21 @@ public sealed class SocketPipelineSession : ISession
     private readonly CancellationTokenSource _cts = new();
     private int _disposed;
     private long _lastReceivedAtTicks;
+    private int _state = SessionState.Connecting.Value;
+    private object? _context;
 
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastReceivedAt => new DateTimeOffset(Interlocked.Read(ref _lastReceivedAtTicks), TimeSpan.Zero);
+
+    public SessionState State => new SessionState(Volatile.Read(ref _state));
+
+    public object? Context
+    {
+        get => Volatile.Read(ref _context);
+        set => Volatile.Write(ref _context, value);
+    }
 
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
@@ -32,6 +42,12 @@ public sealed class SocketPipelineSession : ISession
         _pipe = new Pipe();
         var now = DateTimeOffset.UtcNow;
         _lastReceivedAtTicks = now.UtcTicks;
+    }
+
+    public bool TransitionTo(SessionState newState)
+    {
+        Volatile.Write(ref _state, newState.Value);
+        return true;
     }
 
     public void StartReceiving()
