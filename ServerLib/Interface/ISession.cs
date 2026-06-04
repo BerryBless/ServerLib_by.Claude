@@ -86,6 +86,11 @@ public interface ISession : IAsyncDisposable
     /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
     /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
     /// </list>
+    /// <b>[상태 소유권:]</b> transport 생명주기 상태(<see cref="SessionState.Connecting"/>·<see cref="SessionState.Connected"/>·
+    /// <see cref="SessionState.Disconnecting"/>·<see cref="SessionState.Disconnected"/>)는 서버 라이브러리가 소유·구동합니다.
+    /// 소비자가 이 상태로 직접 전환하면 보고 상태와 실제 소켓 상태가 어긋날 수 있습니다.
+    /// 소비자는 <see cref="SessionState.Authenticated"/> 또는 <see cref="SessionState.Custom(System.Int32)"/>(앱 레벨) 상태만 설정하십시오.
+    /// 하드 강제는 <see cref="SessionState.Disconnected"/> 부활 차단(CAS)뿐이며, 그 외는 규약입니다.
     /// </remarks>
     bool TransitionTo(SessionState newState);
 

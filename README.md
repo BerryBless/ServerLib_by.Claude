@@ -22,6 +22,8 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 
 > 컨텍스트 접근: `session.GetContext<T>()` / `session.TryGetContext<T>(out var ctx)` (`SessionContextExtensions`, `ServerLib.Core`) — `object? Context`를 캐스팅 없이 타입 안전하게 읽는다(미설정·불일치 시 default).
 
+> 상태 소유권(`TransitionTo`): transport 생명주기 상태(`Connecting`/`Connected`/`Disconnecting`/`Disconnected`)는 라이브러리가 소유·구동한다. 소비자는 `Authenticated`/`Custom(≥5)` 앱 레벨 상태만 설정할 것(직접 transport 전환 시 보고 상태와 실제 소켓 상태 불일치). 하드 강제는 Disconnected 부활 차단(CAS)뿐.
+
 ---
 
 ### `IServerListener` — TCP 서버 리스너

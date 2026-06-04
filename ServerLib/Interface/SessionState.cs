@@ -34,15 +34,15 @@ public readonly struct SessionState : IEquatable<SessionState>
         return new SessionState(value);
     }
 
-    /// <summary>연결 수립 중 (초기 상태).</summary>
+    /// <summary>연결 수립 중 (초기 상태). (transport — 라이브러리 소유)</summary>
     public static readonly SessionState Connecting = new(0);
-    /// <summary>연결 완료.</summary>
+    /// <summary>연결 완료. (transport — 라이브러리 소유)</summary>
     public static readonly SessionState Connected = new(1);
-    /// <summary>인증 완료.</summary>
+    /// <summary>인증 완료. (앱 레벨 — 소비자 설정 가능)</summary>
     public static readonly SessionState Authenticated = new(2);
-    /// <summary>연결 해제 진행 중.</summary>
+    /// <summary>연결 해제 진행 중. (transport — 라이브러리 소유)</summary>
     public static readonly SessionState Disconnecting = new(3);
-    /// <summary>연결 해제 완료.</summary>
+    /// <summary>연결 해제 완료. (transport — 라이브러리 소유)</summary>
     public static readonly SessionState Disconnected = new(4);
 
     /// <inheritdoc/>
