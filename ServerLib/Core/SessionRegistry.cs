@@ -36,35 +36,63 @@ public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
     /// <inheritdoc/>
     public async ValueTask BroadcastAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
-        var snapshot = _sessions.Values.ToArray(); // 참조 스냅샷 깊은복사 — 전송 중 컬렉션 변경과 무관한 고정 대상 목록 확보
-        if (snapshot.Length == 0) return;
-
-        // ArrayPool<ValueTask>.Rent: 진행 중 ValueTask들을 담을 임시 배열을 풀에서 대여 — 브로드캐스트마다 new ValueTask[]를 피해 Gen0 회피.
-        var sends = ArrayPool<ValueTask>.Shared.Rent(snapshot.Length);
+        // P5: 대상 세션 스냅샷을 풀 버퍼로 수집. _sessions.Values.ToArray()는 내부 List + 배열 2회(O(N)) 할당에 더해
+        // 모든 버킷 락을 잡지만, ArrayPool 임대 + lock-free foreach는 O(N) 힙 할당을 없애고 락도 잡지 않는다.
+        // (ConcurrentDictionary 열거자 1개 할당만 남음 — 이 컬렉션 고유의 불가피한 비용.)
+        int count = _sessions.Count; // 근사값(동시 변경 가능) — 아래 오버플로 가드로 보정
+        // ArrayPool<ISession>.Rent: 세션 참조 스냅샷용 임시 배열을 풀에서 대여 → 브로드캐스트마다 new ISession[] 회피. 최소 4칸 임대로 길이-0 성장 엣지 회피.
+        var snapshot = ArrayPool<ISession>.Shared.Rent(Math.Max(count, 4));
+        int n = 0;
         try
         {
-            // 모든 세션에 전송 시작 (async 람다 없음 — 클로저/상태머신 할당 제거)
-            for (int i = 0; i < snapshot.Length; i++)
+            // foreach: ConcurrentDictionary의 lock-free 열거 — Values 프로퍼티와 달리 버킷 락을 잡지 않는다.
+            foreach (var kvp in _sessions)
             {
-                try { sends[i] = snapshot[i].SendAsync(data, cancellationToken); }
-                catch (ObjectDisposedException) { sends[i] = ValueTask.CompletedTask; }
-                catch (SocketException) { sends[i] = ValueTask.CompletedTask; }
+                if (n == snapshot.Length) // 임대 후 세션이 늘어 버퍼 초과 → 더 큰 풀 버퍼로 교체(드묾)
+                {
+                    var bigger = ArrayPool<ISession>.Shared.Rent(snapshot.Length * 2);
+                    Array.Copy(snapshot, bigger, n);
+                    Array.Clear(snapshot, 0, n);
+                    ArrayPool<ISession>.Shared.Return(snapshot);
+                    snapshot = bigger;
+                }
+                snapshot[n++] = kvp.Value;
             }
-            // 모든 전송이 이미 시작된 후 완료 대기 (병렬 전송 유지)
-            // OperationCanceledException은 의도적으로 전파 — 호출자의 명시적 취소 요청
-            for (int i = 0; i < snapshot.Length; i++)
+            if (n == 0) return;
+
+            // ArrayPool<ValueTask>.Rent: 진행 중 ValueTask들을 담을 임시 배열을 풀에서 대여 — 브로드캐스트마다 new ValueTask[]를 피해 Gen0 회피.
+            var sends = ArrayPool<ValueTask>.Shared.Rent(n);
+            try
             {
-                try { await sends[i].ConfigureAwait(false); }
-                catch (ObjectDisposedException) { }
-                catch (SocketException) { }
+                // 모든 세션에 전송 시작 (async 람다 없음 — 클로저/상태머신 할당 제거)
+                for (int i = 0; i < n; i++)
+                {
+                    try { sends[i] = snapshot[i].SendAsync(data, cancellationToken); }
+                    catch (ObjectDisposedException) { sends[i] = ValueTask.CompletedTask; }
+                    catch (SocketException) { sends[i] = ValueTask.CompletedTask; }
+                }
+                // 모든 전송이 이미 시작된 후 완료 대기 (병렬 전송 유지)
+                // OperationCanceledException은 의도적으로 전파 — 호출자의 명시적 취소 요청
+                for (int i = 0; i < n; i++)
+                {
+                    try { await sends[i].ConfigureAwait(false); }
+                    catch (ObjectDisposedException) { }
+                    catch (SocketException) { }
+                }
+            }
+            finally
+            {
+                // Array.Clear: 풀 배열에 남은 ValueTask(내부 IValueTaskSource 참조)를 비워 반납 — 미정리 시 다음 대여자가 죽은 참조를 잡아
+                // 객체가 GC되지 못하는 누수가 생긴다(풀은 배열을 zero-fill하지 않으므로 수동 정리 필수).
+                Array.Clear(sends, 0, n);
+                ArrayPool<ValueTask>.Shared.Return(sends);
             }
         }
         finally
         {
-            // Array.Clear: 풀 배열에 남은 ValueTask(내부 IValueTaskSource 참조)를 비워 반납 — 미정리 시 다음 대여자가 죽은 참조를 잡아
-            // 객체가 GC되지 못하는 누수가 생긴다(풀은 배열을 zero-fill하지 않으므로 수동 정리 필수).
-            Array.Clear(sends, 0, snapshot.Length);
-            ArrayPool<ValueTask>.Shared.Return(sends);
+            // 세션 참조 스냅샷도 비우고 반납 — ISession 참조 잔류 시 풀을 통해 객체가 GC되지 못하는 누수 방지.
+            Array.Clear(snapshot, 0, n);
+            ArrayPool<ISession>.Shared.Return(snapshot);
         }
     }
 
