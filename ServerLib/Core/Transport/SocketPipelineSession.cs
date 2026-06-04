@@ -18,6 +18,8 @@ public sealed class SocketPipelineSession : ISession
     private long _lastReceivedAtTicks;
     private int _state = SessionState.Connecting.Value;
     private object? _context;
+    // SemaphoreSlim: 송신 경로 직렬화 — 자동 PONG 회신과 앱 SendAsync가 동일 소켓에 동시 기록하는 것을 막아 Thread-safe 계약을 보장한다.
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
@@ -228,7 +230,10 @@ public sealed class SocketPipelineSession : ISession
     {
         // Volatile.Read: DisposeAsync와 동시 호출 경합 시 해제 플래그의 최신값을 관찰
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
-        await _socket.SendAsync(data, SocketFlags.None, cancellationToken);
+        // 게이트로 송신을 직렬화: 자동 PONG 회신과 앱 송신이 동일 소켓에 겹쳐 기록되지 않도록 한 번에 하나만
+        await _sendGate.WaitAsync(cancellationToken);
+        try { await _socket.SendAsync(data, SocketFlags.None, cancellationToken); }
+        finally { _sendGate.Release(); }
     }
 
     public async ValueTask DisposeAsync()
@@ -240,5 +245,6 @@ public sealed class SocketPipelineSession : ISession
         _socket.Dispose();
         _cts.Dispose();
         Volatile.Write(ref _context, null); // 민감 데이터 잔류 방지 (CWE-212/459) — 사용자 컨텍스트 참조 해제
+        _sendGate.Dispose();
     }
 }

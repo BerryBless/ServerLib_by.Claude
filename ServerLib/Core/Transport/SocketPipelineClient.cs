@@ -16,6 +16,9 @@ public sealed class SocketPipelineClient : IClientConnection
     private CancellationTokenSource? _cts;
     private int _disposed;
     private long _rttTicks; // 마지막 RTT(ticks) — Volatile로 갱신/읽기
+    // SemaphoreSlim: 송신 경로 직렬화 — 커널 전환 없이 스핀 후 관리형 대기로 전환하는 경량 게이트.
+    // PING 루프와 앱 SendAsync가 동일 소켓에 동시 기록하는 것을 막아 Thread-safe 계약을 보장한다.
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     public bool IsConnected => _socket?.Connected ?? false;
     public TimeSpan? PingInterval { get; set; }
@@ -196,7 +199,10 @@ public sealed class SocketPipelineClient : IClientConnection
         // Volatile.Read: DisposeAsync와 동시 호출 경합 시 해제 플래그의 최신값을 관찰
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
         if (_socket == null) throw new InvalidOperationException("Not connected.");
-        await _socket.SendAsync(data, SocketFlags.None, cancellationToken);
+        // 게이트로 송신을 직렬화: 동일 소켓에 대한 중첩 SendAsync(겹침)는 미지원이므로 한 번에 하나만 기록
+        await _sendGate.WaitAsync(cancellationToken);
+        try { await _socket.SendAsync(data, SocketFlags.None, cancellationToken); }
+        finally { _sendGate.Release(); }
     }
 
     public void Disconnect()
@@ -213,5 +219,6 @@ public sealed class SocketPipelineClient : IClientConnection
         if (_cts != null) await _cts.CancelAsync();
         _socket?.Dispose();
         _cts?.Dispose();
+        _sendGate.Dispose();
     }
 }
