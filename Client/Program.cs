@@ -57,6 +57,7 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
     long total = 0;
 
     await using var conn = new SocketPipelineClient();
+    conn.PingInterval = TimeSpan.FromSeconds(1); // 1초마다 자동 PING → RTT 측정
     conn.OnConnected = () =>
     {
         Console.WriteLine($"  [T{i}] connected");
@@ -69,6 +70,19 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
     };
 
     await conn.ConnectAsync(Host, Port, ct);
+
+    if (i == 0)
+    {
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(2000, ct); }
+                catch (OperationCanceledException) { break; }
+                Console.WriteLine($"  [T0] RTT={conn.Rtt.TotalMilliseconds:F1}ms");
+            }
+        });
+    }
 
     while (!ct.IsCancellationRequested && (sendCount is null || total < sendCount))
     {
