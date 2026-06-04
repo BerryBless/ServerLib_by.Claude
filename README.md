@@ -2,7 +2,7 @@
 
 ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스는 고성능 서버 라이브러리 설계 원칙(Zero-allocation hot path, `ValueTask` 반환, Thread-safety 명시)을 계약으로 강제합니다.
 
-> 네임스페이스: `ServerLib.Interface` (IPacket만 `ServerLib.Core.Serialization`)
+> 네임스페이스: `ServerLib.Interface` (단, 직렬화 계약인 `IPacket`·`IPacketSerializer`은 `ServerLib.Core.Serialization` — Interface 레이어가 Core를 역참조하지 않도록 직렬화 서브시스템에 함께 둔다)
 
 ---
 
@@ -60,6 +60,8 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 
 ### `IPacketSerializer` — 패킷 직렬화기
 패킷 객체와 바이트 버퍼 사이의 직렬화/역직렬화를 정의합니다. 모든 연산이 `Span`/`ReadOnlySpan` 기반으로 동작하여 힙 할당 없는 Zero-copy를 보장합니다.
+
+> 네임스페이스: `ServerLib.Core.Serialization` (`IPacket`과 함께 직렬화 서브시스템에 위치)
 
 > 패킷 구조: `PacketId(2B) | BodyLength(2B) | Body(NB)` — LittleEndian
 

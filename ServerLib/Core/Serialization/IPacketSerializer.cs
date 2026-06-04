@@ -1,6 +1,4 @@
-using ServerLib.Core.Serialization;
-
-namespace ServerLib.Interface;
+namespace ServerLib.Core.Serialization;
 
 /// <summary>
 /// 패킷 객체와 바이트 버퍼 사이의 직렬화/역직렬화를 정의하는 인터페이스입니다.

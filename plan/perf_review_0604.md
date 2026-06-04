@@ -201,10 +201,14 @@ plain `Volatile.Write(ref long)`은 **32-bit 런타임에서 원자성 미보장
 ### E6 🔴 LOW — `Start(int port)` 한정
 bind 주소/backlog/IPv6/dual-mode 미지원.
 
-### E7 🔴🔴 MED — `IPacketSerializer` → Core 레이어 역전 (아키텍처)
-**위치:** `Interface/IPacketSerializer.cs:1` `using ServerLib.Core.Serialization;` → `IPacket`(`Core/Serialization/IPacket.cs`) 참조.
+### E7 🔴🔴 MED — `IPacketSerializer` → Core 레이어 역전 (아키텍처) — ✅ 적용됨(2026-06-04)
+**위치(수정 전):** `Interface/IPacketSerializer.cs:1` `using ServerLib.Core.Serialization;` → `IPacket`(`Core/Serialization/IPacket.cs`) 참조.
 
-프로젝트 규칙("Interface는 순수 추상화, 의존성은 Core→Interface, 역방향 금지")을 **정면 위반**. 추상화인 `IPacket`이 Core에 있고 Interface가 Core를 역참조. **수정:** `IPacket`(및 `SpanReader/SpanWriter` 계약)을 `Interface` 레이어로 이동.
+프로젝트 규칙("Interface는 순수 추상화, 의존성은 Core→Interface, 역방향 금지")을 위반했다. 추상화인 `IPacket`이 Core에 있고 Interface가 Core를 역참조.
+
+**적용한 해법(Option F — 초기 제안 C에서 변경):** grep 결과 (1) Interface 레이어에서 Core를 역참조하는 파일은 `IPacketSerializer.cs` **단 1개**, (2) `IPacketSerializer`를 추상 타입으로 소비하는 코드는 없음(`BinaryPacketSerializer` 구현뿐), (3) `IPacket`은 이미 `Core.Serialization`에 존재. 따라서 `SpanReader/SpanWriter`(concrete ref struct)를 순수 추상화 레이어로 끌어올리는 C안 대신, **`IPacketSerializer`를 `Core.Serialization`으로 이동**(직렬화 계약+구현을 한 서브시스템으로 응집). 결과: Interface 레이어는 Core 참조 0개로 완전히 순수해지고, ref struct를 Interface에 넣는 2차 위반도 없음. 1파일 이동으로 해결.
+
+> 직렬화(IPacket·IPacketSerializer·SpanReader/Writer·BinaryPacketSerializer)는 transport 추상화(ISession 등)와 독립된 Core 서브시스템으로 취급한다.
 
 ---
 
