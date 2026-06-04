@@ -146,10 +146,11 @@ public sealed class SocketPipelineClient : IClientConnection
                 var consumed = buffer.Start;
                 var examined = buffer.End;
 
-                while (TryReadPacket(ref buffer, out var packet))
+                while (TryReadPacket(ref buffer, out var packet, out var packetId))
                 {
                     // 예약 ID 가로채기: PONG이면 RTT만 갱신하고 앱 OnReceived는 호출하지 않는다.
-                    if (TryHandlePong(packet))
+                    // P8(대칭): 이미 파싱한 packetId로 분기 → PONG이 아닌 패킷은 RTT 프로브(stackalloc·CopyTo·재파싱)를 건너뛴다.
+                    if (HeartbeatProtocol.IsPong(packetId) && TryHandlePong(packet))
                     {
                         consumed = buffer.Start;
                         continue;
@@ -194,15 +195,16 @@ public sealed class SocketPipelineClient : IClientConnection
         }
     }
 
-    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet)
+    private static bool TryReadPacket(ref ReadOnlySequence<byte> buffer, out ReadOnlySequence<byte> packet, out ushort packetId)
     {
+        packetId = 0;
         if (buffer.Length < PacketPool.HeaderSize) { packet = default; return false; }
 
         // stackalloc: 헤더(최대 4바이트)를 스택 버퍼로 복사 — 패킷마다 힙 할당 없이 처리
         Span<byte> headerBuf = stackalloc byte[PacketPool.HeaderSize];
         buffer.Slice(0, PacketPool.HeaderSize).CopyTo(headerBuf); // 멀티세그먼트여도 중간 버퍼 없이 세그먼트별 직접 복사
 
-        if (!PacketPool.TryParseHeader(headerBuf, out _, out int bodyLength)) { packet = default; return false; }
+        if (!PacketPool.TryParseHeader(headerBuf, out packetId, out int bodyLength)) { packet = default; return false; }
 
         int totalLength = PacketPool.HeaderSize + bodyLength;
         if (buffer.Length < totalLength) { packet = default; return false; }
