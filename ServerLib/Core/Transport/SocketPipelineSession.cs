@@ -189,42 +189,51 @@ public sealed class SocketPipelineSession : ISession
         return true;
     }
 
-    private async ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
+    // P2: 자신을 async로 만들지 않고(=패킷당 상태머신 박싱 제거) 동기 완료 가능 경로에서는 inner ValueTask를 그대로 반환한다.
+    // 단일 세그먼트 + 동기 핸들러면 전 경로 무할당. PONG·멀티세그먼트(드묾)만 풀 버퍼 반납 때문에 async 헬퍼로 위임한다.
+    private ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
     {
         // 예약 ID 가로채기: PING이면 PONG을 회신하고 앱 OnReceived는 호출하지 않는다.
-        // (stackalloc이 await를 넘지 못하므로 동기 헬퍼에서 풀 버퍼로 빌드 후 여기서 송신)
         var pongBuf = TryBuildPongBuffer(packet, out int pongLen);
         if (pongBuf != null)
-        {
-            try { await SendAsync(pongBuf.AsMemory(0, pongLen)); }
-            catch (ObjectDisposedException) { }
-            catch (SocketException) { }
-            finally { ArrayPool<byte>.Shared.Return(pongBuf); }
-            return;
-        }
+            return SendPongAsync(pongBuf, pongLen);
 
-        if (OnReceived == null) return;
+        // 콜백을 지역 변수로 1회만 읽어 IO 스레드 도중 재할당/null 경합을 배제(이전엔 null 검사·호출에서 2회 읽음).
+        var onReceived = OnReceived;
+        if (onReceived == null) return ValueTask.CompletedTask;
 
-        // Fast-path: 대부분의 패킷은 단일 세그먼트(Pipe 버퍼 내 연속 메모리)이므로
-        // ArrayPool 대여 없이 First 슬라이스를 그대로 콜백에 넘긴다(무할당).
+        // Fast-path: 단일 세그먼트면 ArrayPool 없이 First 슬라이스를 콜백에 넘기고 그 ValueTask를 그대로 반환한다.
+        // 콜백이 동기 완료하면 무할당, 비동기면 그건 사용자 핸들러의 상태머신(우리가 추가하는 박싱은 없음).
         if (packet.IsSingleSegment)
+            return onReceived(packet.First);
+
+        // 세그먼트 경계에 걸친 드문 경우만 연속 버퍼로 병합 필요 → async 헬퍼에서 ArrayPool 임대/반납.
+        return DispatchMultiSegmentAsync(onReceived, packet);
+    }
+
+    // PING 가로채기 응답: stackalloc이 빌드한 PONG 풀 버퍼를 송신 후 반드시 반납한다.
+    private async ValueTask SendPongAsync(byte[] pongBuf, int pongLen)
+    {
+        try { await SendAsync(pongBuf.AsMemory(0, pongLen)).ConfigureAwait(false); }
+        catch (ObjectDisposedException) { }
+        catch (SocketException) { }
+        finally { ArrayPool<byte>.Shared.Return(pongBuf); } // 영구 할당 대신 풀 임대였으므로 반드시 반납(미반납 시 풀 고갈)
+    }
+
+    // 멀티세그먼트 병합: 영구 배열 할당 대신 ArrayPool 임대로 GC 압력 억제. CopyTo는 await 이전(동기)이라 packet 수명과 무관하게 안전.
+    private static async ValueTask DispatchMultiSegmentAsync(Func<ReadOnlyMemory<byte>, ValueTask> onReceived, ReadOnlySequence<byte> packet)
+    {
+        var length = (int)packet.Length;
+        // ArrayPool<byte>.Shared.Rent: 드문 멀티세그먼트 경로의 연속 버퍼 — 콜백 반환 후 즉시 반납해 재사용(GC 무압력).
+        var rented = ArrayPool<byte>.Shared.Rent(length);
+        try
         {
-            await OnReceived(packet.First);
+            packet.CopyTo(rented);
+            await onReceived(rented.AsMemory(0, length)).ConfigureAwait(false);
         }
-        else
+        finally
         {
-            // 세그먼트 경계에 걸친 드문 경우만 연속 버퍼로 병합 필요 → 영구 배열 할당 대신 ArrayPool 임대로 GC 압력 억제.
-            var length = (int)packet.Length;
-            var rented = ArrayPool<byte>.Shared.Rent(length);
-            try
-            {
-                packet.CopyTo(rented);
-                await OnReceived(rented.AsMemory(0, length));
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(rented); // 풀에 반납하여 다음 멀티세그먼트 패킷이 재사용
-            }
+            ArrayPool<byte>.Shared.Return(rented); // 풀에 반납하여 다음 멀티세그먼트 패킷이 재사용
         }
     }
 
