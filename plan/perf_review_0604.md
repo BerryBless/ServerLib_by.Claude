@@ -13,42 +13,60 @@
 
 | # | 발견 | 위치 | 영향 | 신뢰 |
 |---|------|------|------|------|
-| P1 | 디스패치 오프로드 부재 — IO 루프에서 핸들러를 패킷마다 inline await | `SocketPipelineSession.cs:119-123` | 처리량·스레드풀 점유 (HIGH) | 🔴🔴 |
-| P2 | 패킷마다 `async ValueTask` 상태머신 박싱 | `SocketPipelineSession.cs:172` | 정상부하 GC 압력 (~1 alloc/packet) | 🔴 |
-| P3 | `_sendGate`를 송신 전체 구간 점유 → 브로드캐스트 HOL·PONG 지연·죽은 피어에 무한 대기 | `SocketPipelineSession.cs:234-236` | 꼬리지연·가용성 (MED) | 🔴🔴 |
-| P4 | RUDP 송신 취소 경로 ArrayPool 누수 → 풀 고갈 | `RudpChannel.cs:45-53` | 정확성→성능 퇴화 (HIGH) | 🔴🔴 |
+| P2 | 패킷마다 `async ValueTask` 상태머신 박싱 | `SocketPipelineSession.cs:172` | 정상부하 GC 압력 (~1 alloc/packet) — **TCP live path 최상위 GC** | 🔴 |
+| P3 | `_sendGate`를 송신 전체 구간 점유 → 브로드캐스트 HOL·PONG 지연·죽은 피어에 무한 대기 | `SocketPipelineSession.cs:234-236` | 꼬리지연·가용성 (MED) — **실측 재현됨(③)** | 🔴🔴 |
 | P5 | `BroadcastAsync` 호출마다 `Values.ToArray()` 스냅샷 할당 | `SessionRegistry.cs:39` | 브로드캐스트 GC (MED/LOW) | 🔴🔴 |
+| P1 | 디스패치 오프로드 부재 — 핸들러를 IO 루프에서 패킷마다 inline await | `SocketPipelineSession.cs:119-123` | **조건부**: 핸들러가 no-blocking 계약을 지키면 정상. 위반 시 처리량·스레드풀 점유 | 🔴🔴 |
+| ⚠️ | P4·P6·C5(RUDP 풀 누수/할당/use-after-return) | `RudpChannel.cs` | **현재 dead code — `new RudpChannel` 호출처 0개**. 잠재 결함, live 영향 없음 | 🔴🔴 |
 
-핵심 결론: **프레이밍/직렬화 레이어는 매우 잘 설계됨**(진짜 zero-copy 수신, 올바른 `AdvanceTo`, lock-free 상태, pooled 헤더, NoDelay). 남은 성능 리스크는 대부분 **핸들러를 IO 루프에서 분리하지 않은 것(P1)** 에서 파생되며, 이것이 #1 처리량 이슈이자 #1 GC 이슈(P2)의 뿌리다.
+핵심 결론: **프레이밍/직렬화 레이어는 매우 잘 설계됨** — 실측에서 직렬화 hot path **Allocated = 0 B** 확인(②). live TCP 경로에서 남은 실질 GC 압력은 **패킷당 async 상태머신 박싱(P2)** 이며, 가용성 리스크는 **송신 게이트의 무한 점유(P3, ③에서 실측 재현)** 다. RUDP 서브시스템(P4·P6·C5)은 **어떤 진입점에서도 인스턴스화되지 않는 미연결 코드**라 현재 영향이 없으므로 우선순위에서 제외했다(아래 ⚠️ 참조).
+
+> **⚠️ RUDP 미연결(dead code) 주의:** `RudpChannel`/`RudpSendQueue`는 `ServerLib` 내 어디서도 `new`되지 않는다(테스트 포함 grep 0건). 따라서 P4(취소 경로 풀 누수), P6(`new byte[]`/수신), C5(죽은 재전송→use-after-return)는 **모두 실행되지 않는 코드의 잠재 결함**이다. RUDP를 실제 배선하기 전에 수정하면 충분하며, "지금 즉시" 적용 대상이 아니다. (RUDP를 곧 활성화할 계획이면 P4를 최우선으로 올릴 것.)
 
 ---
 
 ## 실측 (Empirical)
 
-> *(벤치 실행 완료 후 채워짐 — 아래 섹션 참조)*
+> 환경: BenchmarkDotNet v0.14.0, **.NET 10.0.8 (10.0.826.23019), X64 RyuJIT AVX2**, Workstation Concurrent GC, ShortRun(Warmup=3, Iter=3), `InProcessEmitToolchain`. 마이크로벤치는 *기준선·검증* 용도.
 
-### Microbenchmark — `Benchmark/PacketSerializerBenchmark.cs`
-- **인프라 이슈 (선행 단계에서 발견):** 소스에 `[SimpleJob(RuntimeMoniker.Net90)]`가 박혀 있으나 프로젝트는 `net10.0`. BDN 0.14.0이 net9 툴체인 프로젝트를 생성하면 net10 어셈블리 참조에 실패할 수 있음. 본 실측은 소스 미수정 + `--inProcess --job short`로 net10 호스트에서 직접 실행하여 우회. **권장 수정:** 모니커를 `Net10_0`로 상향하거나 `[SimpleJob]` 제거 후 in-process 고정.
+### ① 인프라 이슈 — 벤치 자체가 실행 불가 (선행 단계에서 실측 확인) 🔴🔴
+`PacketSerializerBenchmark`/`SessionSendBenchmark` 둘 다 `[SimpleJob(RuntimeMoniker.Net90)]`을 박아두었으나 프로젝트는 `net10.0`. BDN이 net9 자동생성 프로젝트를 빌드하려다 **실제로 실패**:
+```
+error NU1201: Benchmark 프로젝트가 net9.0(.NETCoreApp,v9.0)과 호환되지 않습니다.
+              Benchmark 프로젝트는 net10.0을 지원합니다.
+// BenchmarkDotNet has failed to build the auto-generated boilerplate code.
+```
+→ **모니커 수정 없이는 벤치가 0개 실행**됨(리뷰 시작 시점 상태). 본 실측은 `--inProcess`로 net10 호스트에서 직접 실행하여 우회했고 결과는 ②. **권장 수정:** `RuntimeMoniker.Net90` → `Net10_0` 상향, 또는 `[SimpleJob]` 제거 후 in-process 고정.
 
-| Method | Mean | Allocated |
-|--------|------|-----------|
-| _(채워짐)_ | | |
+### ② 직렬화 microbench 결과 — zero-alloc 주장 실측 검증 ✅
+`Benchmark/PacketSerializerBenchmark.cs` (메모리 진단 포함):
 
-### LoadTest — `LoadTest/DummyClient.cs`
-- **실행 보류 (정직한 보고):** `DummyClient`는 Increment(Id=1) 패킷을 전송하고 **에코 수신을 기대**(`received == 0`이면 종료)하나, 예제 서버는 에코하지 않음 → `ReceiveAsync`에서 무한 대기하거나 송신량만 측정되어 **오해를 주는 수치**가 됨. 의미 있는 부하 수치를 내려면 (a) 서버 예제에 에코 경로 추가, 또는 (b) DummyClient를 송신-전용 측정으로 명시 필요. 가짜 처리량 수치를 보고하지 않기 위해 미실행 처리.
+| Method | Mean | Gen0 | Allocated | vs baseline |
+|--------|-----:|-----:|----------:|------------:|
+| `new byte[] + Encoding.GetBytes` (baseline) | 21.77 ns | 0.0068 | **128 B** | 1.00× |
+| `ArrayPool.Rent + Span` (Zero-Allocation) | 5.36 ns | – | **0 B** | **0.246× 시간, 0 할당** |
+| `HeaderParse from Span` (Zero-Allocation) | 0.195 ns | – | **0 B** | empty-method과 구분 불가 |
+
+**해석:** 정적 스캔이 zero-alloc로 판정한 `SpanWriter`/`ArrayPool`/헤더 파싱 경로가 실측에서도 **Allocated = 0 B**로 확인됨(baseline 128B 대비). ArrayPool+Span 직렬화는 `new byte[]`+`Encoding.GetBytes` 대비 **약 4배 빠르고 할당 0**. 직렬화 레이어는 성능 목표를 충족.
+
+### ③ `SessionSendBenchmark` — 측정 불가(hang), 그러나 P3를 실측 재현 🔴
+`SessionSendBenchmark`는 파일럿 단계에서 **무한 정지**했다. 원인: 벤치가 `_clientSocket`(수신측)을 전혀 drain하지 않아 ~512 ops(≈64KB) 후 **TCP 송신 버퍼가 가득 차 `SendAsync`가 영구 블록**된다. 이는 (a) 벤치 설계 결함이자, (b) **finding P3("드레인하지 않는/죽은 피어에 대해 `_sendGate` 점유 송신이 무한 대기")를 실측으로 재현**한 것이다. 송신 타임아웃(P3 수정안)이 있었다면 이 hang은 발생하지 않는다. (해당 hang 프로세스는 PID 지정으로 정리함.)
+
+### ④ LoadTest — 실행 보류 (정직한 보고)
+`LoadTest/DummyClient.cs`는 Increment(Id=1) 패킷을 전송하고 **에코 수신을 기대**(`received == 0`이면 종료)하나, 예제 서버는 에코하지 않음 → `ReceiveAsync` 무한 대기 또는 송신량만 측정되어 **오해를 주는 수치**가 됨. 가짜 처리량 수치 보고를 피하기 위해 미실행. 의미 있는 부하 측정을 하려면 (a) 서버 예제에 에코 경로 추가, 또는 (b) DummyClient를 송신-전용으로 명시 필요.
 
 ---
 
 ## 우선순위 ① — 성능 / GC (영향 순)
 
-### P1 🔴🔴 HIGH — 디스패치 오프로드 부재 (inline 핸들러)
+### P1 🔴🔴 조건부 — 디스패치 오프로드 경로 부재 (inline 핸들러)
 **위치:** `SocketPipelineSession.cs:119-123` (`ReadPipeAsync` → `await DispatchPacketAsync` → `await OnReceived`)
 
-각 세션이 수신 루프 스레드에서 패킷을 **엄격히 순차** 처리한다. 다음 패킷 파싱이 현재 핸들러 완료까지 대기 → (a) 세션 내 파이프라이닝 0, (b) 핸들러 실행 동안 스레드풀 스레드 점유(다수 세션이 느린 핸들러면 스레드풀 고갈), (c) `FlushAsync` 백프레셔(`:93`)로 느린 reader가 결국 `ReceiveAsync`를 멈춰 TCP 흐름제어로 피어를 throttle. 핸들러에 5ms DB 호출이 있으면 해당 세션은 망 용량과 무관하게 ~200 pkt/s로 캡.
+> **먼저 — 이것은 의도된 설계다.** `ISession.OnReceived` 문서는 "콜백 내부에서 동기 블로킹을 절대 수행하지 말 것(블로킹 시 전체 수신 루프 정지)"을 **명시 계약**으로 둔다. 핸들러가 이 계약(빠른·non-blocking)을 지키면 inline 디스패치가 **오히려 최적**이다(디스패치 홉·버퍼링 없음). 따라서 이 항목은 "지배적 성능 결함"이 아니라 **"계약 위반 시 완충 장치가 없다"**는 견고성 갭이다.
 
-이 항목은 **P2(패킷당 async 박싱)의 근본 원인**이기도 하다.
+핸들러가 계약을 위반(DB·File I/O 등)하면: (a) 세션 내 파이프라이닝 0, (b) 핸들러 실행 동안 스레드풀 스레드 점유 → 다수 세션이 느린 핸들러면 스레드풀 고갈, (c) `FlushAsync` 백프레셔(`:93`)로 느린 reader가 `ReceiveAsync`를 멈춰 TCP 흐름제어로 피어 throttle. 5ms DB 호출이면 해당 세션은 ~200 pkt/s로 캡(=문서가 경고하는 바로 그 안티패턴).
 
-**권장 수정:** 프레이밍과 핸들러 사이에 세션별 `Channel<T>`(bounded, `SingleReader=true`)를 둔다. 읽기 루프는 프레이밍+enqueue만, 전용 소비자가 drain.
+**권장 (선택적):** 모든 핸들러를 강제로 `Channel`에 태우지 말 것 — fast-handler 공통 경로를 **퇴화**시킨다. 대신 **옵트인** 오프로드를 제공: 느린 핸들러를 쓰는 소비자만 세션별 `Channel<T>`(bounded, `SingleReader=true`)를 켜서 프레이밍과 처리를 분리. 읽기 루프는 프레이밍+enqueue만, 전용 소비자가 drain.
 ```csharp
 // Channel<T>: lock-free SPSC 경로 — 단일 IO 리더가 쓰고 단일 소비자가 읽어 락 없이 핸들러를 IO 루프에서 분리.
 //             Bounded + FullMode.Wait로 백프레셔를 핸들러 지연 → 수신 throttle로 자연 전파.
@@ -69,18 +87,17 @@ private readonly Channel<PooledPacket> _inbound =
 
 세마포어를 `await _socket.SendAsync(...)` 전 구간 점유. 세마포어 자체는 저렴하나, TCP 송신 버퍼가 가득(느린 피어)이면 진행 중인 앱 송신이 게이트를 잡고 **하트비트 PONG을 막아** RTT가 앱 송신 지연에 결합 → 거짓 유휴/타임아웃 유발. 더 나아가 **죽은 피어**에 대해 소켓 `SendAsync` 취소는 best-effort라 무한 대기 가능, 그 세션 대상 모든 송신이 블록되고 `BroadcastAsync`(`SessionRegistry.cs:55-60`)는 각 송신을 순차 await하므로 **한 세션이 막히면 브로드캐스트 전체 정지**(가장 현실적인 hang).
 
-**권장 수정:** 송신에 타임아웃 부여(linked CTS `CancelAfter`).
-```csharp
-using var sendCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-sendCts.CancelAfter(SendTimeout);                 // 죽은 피어가 게이트를 영구 점유하는 것을 차단
-await _sendGate.WaitAsync(sendCts.Token);
-try { await _socket.SendAsync(data, SocketFlags.None, sendCts.Token); }
-finally { _sendGate.Release(); }
-```
-선택: 세션별 송신 큐(`Channel<ReadOnlyMemory<byte>>` + 단일 writer)로 게이트 제거 + 쓰기 배칭 + PONG 우선순위. **NoDelay=true는 유지**(게임 서버 저지연), 배칭은 앱 레벨 coalescing이지 Nagle 복원 아님.
+**권장 수정 — 단, 할당에 주의(성능 1순위):** "linked CTS + `CancelAfter`"를 **매 송신마다** 만들면 `CancellationTokenSource` + 타이머 + 등록이 송신당 할당되어 → **P2의 패킷당 박싱보다 더 큰 정상부하 GC를 새로 유발**한다(GC-first 라이브러리에선 순손해). 다음 중 택1:
+- **(선호) 세션별 송신 큐**(`Channel<ReadOnlyMemory<byte>>` + 단일 writer task): 게이트 자체를 제거하고, writer task가 `Socket.SendAsync`에 `CancelAfter`를 **재사용 타이머 1개**로 적용 + 쓰기 배칭 + PONG 우선순위. 송신당 추가 할당 0.
+- **(경량) 소켓 `SendTimeout`/`SendBufferSize`** 기반 차단: CTS 없이 OS 레벨 타임아웃으로 무한 점유만 끊기.
+- 송신당 CTS는 **피하거나**, 부득이하면 풀링/재사용 패턴으로.
 
-### P4 🔴🔴 HIGH — RUDP 송신 취소 경로 ArrayPool 누수
-**위치:** `RudpChannel.cs:45-53` (`SendReliableAsync`)
+**NoDelay=true는 유지**(게임 서버 저지연), 배칭은 앱 레벨 coalescing이지 Nagle 복원 아님.
+
+> **실측 근거:** 이 무한-점유 시나리오는 `SessionSendBenchmark`가 수신측을 drain하지 않아 송신 버퍼가 가득 찰 때 **그대로 hang**하는 것으로 재현됨(실측 ③).
+
+### P4 🔴🔴 ~~HIGH~~ → 잠재(미연결) — RUDP 송신 취소 경로 ArrayPool 누수
+**위치:** `RudpChannel.cs:45-53` (`SendReliableAsync`) · **현재 dead code(호출처 0개) — 잠재 결함, live 영향 없음**
 
 버퍼를 Rent 후 **try/finally 없음**. 채널이 `BoundedChannelFullMode.Wait`라 가득 차고 `ct`가 발화하면 `EnqueueAsync`가 `RudpSegment` 진입 전 OCE를 던져 → `SendLoopAsync`의 finally도 `Dispose` drain도 버퍼를 보지 못함 → **영구 누수**(반복 시 풀 고갈 → 모든 Rent가 새 할당으로 퇴화). 주석 "반납 책임은 SendLoop으로 이전"은 *enqueue 성공 시에만* 참.
 
@@ -101,8 +118,8 @@ finally { if (!handedOff) ArrayPool<byte>.Shared.Return(buffer); }
 
 `ValueTask[]` 결과 배열은 이미 `ArrayPool` 대여(`:43`)인데 세션 스냅샷은 매 호출 새 배열 → 같은 메서드 내 정책 불일치. 다만 `ConcurrentDictionary.Values` 스냅샷 풀링은 비자명(`Count`가 근사값 → 오버플로 시 재대여 필요)하므로 **의식적 LOW**. `IdleSweepLoopAsync:89`가 쓰는 재사용 List 패턴 참고.
 
-### P6 🔴🔴 MED — RUDP 수신 패킷마다 `new byte[]`
-**위치:** `RudpChannel.cs:103-105` (`new byte[received - HeaderSize]`)
+### P6 🔴🔴 ~~MED~~ → 잠재(미연결) — RUDP 수신 패킷마다 `new byte[]`
+**위치:** `RudpChannel.cs:103-105` (`new byte[received - HeaderSize]`) · **현재 dead code**
 
 `OnReceived`가 await되므로 수명 계약은 TCP 멀티세그먼트 경로(이미 `Rent→await→Return`)와 동일. 두 전송 경로가 불일치(TCP는 풀링, RUDP는 raw alloc). 고PPS에서 Gen0 압력. **수정:** ArrayPool 대여 + 반납 계약, 또는 P1식 오프로드.
 
@@ -148,7 +165,7 @@ plain `Volatile.Write(ref long)`은 **32-bit 런타임에서 원자성 미보장
 ### C4 🔴 LOW — `_sendGate.Dispose()` 경합
 **위치:** `SocketPipelineSession.cs:248`. `SemaphoreSlim.Dispose()`는 대기 중 `WaitAsync` waiter를 release/fault하지 않음 → 큐된 waiter(예: BroadcastAsync 송신)가 **영구 hang**하거나, dispose 후 새 WaitAsync는 ODE, 점유자의 `finally{Release()}`는 ODE. 저빈도 race.
 
-### C5 🔴 MED(잠재) — 죽은 RUDP 재전송 코드 → 향후 use-after-return
+### C5 🔴 잠재(미연결) — 죽은 RUDP 재전송 코드 → 향후 use-after-return
 `WithRetry`/`MaxRetries`/`RetransmitInterval`/`RudpRecvWindow.BuildAckBitmap` 모두 미참조(dead code). `SendLoop`은 첫 송신 후 버퍼를 즉시 Return. 현재는 fire-and-forget UDP라 안전하나 **재전송을 배선하는 순간 이미 반납된 버퍼 재송신 = use-after-return**. **결정 필요:** (A) 죽은 재전송 코드 삭제, 또는 (B) 버퍼 소유권을 unacked-segment 저장소로 옮기고 ACK/MaxRetries 시점에만 Return.
 
 ### ✅ 검증 결과 "정상" (수정 불필요 — false positive 방지)
@@ -193,11 +210,18 @@ bind 주소/backlog/IPv6/dual-mode 미지원.
 
 ## 권장 적용 순서 (성능 우선)
 
-1. **P4**(풀 누수, 정확성→성능 퇴화) — 작고 안전, 즉시.
-2. **P3**(송신 타임아웃) — hang/가용성, 작은 변경.
-3. **P1**(Channel 디스패치 오프로드) — 최대 성능 개선, P2 동반 완화. 설계 변경이라 별도 사이클 권장(이 저장소엔 `thread-dispatch-design`/`io-loop-design` 하네스 존재).
-4. **P7·C2·C3**(Pipe 옵션 + ConfigureAwait) — 묶어서, 클라이언트 데드락 차단.
-5. **P5·P6·P8**(할당·CPU 미세 최적화) — 측정 후.
-6. **E1·E7**(편의성·레이어링) — API 안정화 시점.
+**Live 경로 (지금 실행되는 코드):**
+1. **P3**(송신 무한-점유 차단) — hang/가용성, 실측 재현됨. 단 송신당 CTS 할당 회피(세션 송신 큐 또는 소켓 타임아웃). 작은 변경, 높은 ROI.
+2. **P7·C2·C3**(Pipe `useSynchronizationContext:false` + dispose 체인 `ConfigureAwait(false)`) — 묶어서, 클라이언트 데드락 차단. 안전·저위험.
+3. **P2**(패킷당 async 박싱) — live TCP 경로 최상위 GC. 동기 fast-path 분리 또는 P1 옵트인 오프로드와 함께.
+4. **P5·P8**(브로드캐스트 스냅샷·헤더 재파싱) — 미세 최적화, 측정 후.
+5. **P1**(옵트인 디스패치 오프로드) — *강제 적용 금지*(fast-handler 퇴화). 느린 핸들러 지원이 필요할 때만. 설계 변경이라 별도 사이클(`thread-dispatch-design`/`io-loop-design` 하네스 활용).
+6. **C1**(32-bit torn read) — x64/ARM64 전용 배포면 주석만 정정, 32-bit 타깃 시 `Interlocked.Exchange`.
+
+**선결 인프라:** 벤치 `RuntimeMoniker.Net90`→`Net10_0`(또는 in-process) — 측정 가능화.
+
+**미연결(RUDP) — 활성화 전 처리:** P4 → P6 → C5. 지금은 실행되지 않으므로 즉시성 없음. RUDP 배선 직전에 P4를 최우선으로.
+
+**API 안정화 시점:** E1(패킷 레벨 `SendAsync<T>`) · E7(`IPacket` Interface 레이어로 이동, 의존성 역전 해소) · E3·E4·E5·E6.
 
 *실제 코드 수정은 본 리포트 승인 후 별도 단계로 진행한다.*
