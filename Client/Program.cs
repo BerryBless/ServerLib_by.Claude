@@ -37,6 +37,8 @@ Console.CancelKeyPress += (_, e) =>
     Console.WriteLine("\n[Ctrl+C] 종료 신호 수신 — 스레드 정리 중...");
 };
 
+// 참고(E1): 단발성 송신은 conn.SendAsync(packet) 편의 오버로드(PacketSendExtensions)로 직렬화·버퍼 관리를 캡슐화할 수 있다.
+// 단, 아래 hot loop는 패킷을 1회만 직렬화해 buffer를 재사용하는 무할당 패턴이 더 유리하므로 그대로 둔다.
 var serializer = new BinaryPacketSerializer();
 
 var incPacket = new IncrementPacket();

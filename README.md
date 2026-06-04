@@ -18,6 +18,8 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 | `Func<ValueTask>? OnDisconnected { get; set; }` | 연결 종료 시 호출 콜백 | 세션 생명주기 동안 정확히 1회 발화 |
 | `ValueTask SendAsync(ReadOnlyMemory<byte>, CancellationToken)` | 데이터 비동기 전송 | Thread-safe, Zero-allocation, Non-blocking |
 
+> 편의 오버로드: `session.SendAsync(packet)` (`PacketSendExtensions`, `ServerLib.Core.Serialization`) — `IPacket`을 직접 받아 직렬화·풀 버퍼 관리를 캡슐화한다. 송신 동기 완료 시 무할당. `IClientConnection`에도 동일 오버로드 제공. (hot loop는 1회 직렬화 후 `ReadOnlyMemory` 직접 송신이 유리.)
+
 ---
 
 ### `IServerListener` — TCP 서버 리스너
