@@ -40,10 +40,13 @@ public sealed class SocketPipelineListener : IServerListener
 
         _cts = new CancellationTokenSource();
         _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        // SO_REUSEADDR: 직전 종료 소켓이 TIME_WAIT(수 분) 상태여도 동일 포트 재바인드 허용 → 서버 재시작 즉시 복구
         _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+        // backlog: 커널의 accept 대기 큐 크기(앱 큐가 아닌 OS 큐). 순간 연결 폭주를 버퍼링하고 초과 SYN은 커널이 드롭
         _listenSocket.Listen(backlog: 512);
 
+        // Start()는 동기 반환, 루프는 _cts 취소까지 무한 구동하므로 await 없이 분리 구동(fire-and-forget)
         _ = AcceptLoopAsync(_cts.Token);
         if (_idleTimeout.HasValue)
             _ = IdleSweepLoopAsync(_idleTimeout.Value, _cts.Token);
@@ -60,6 +63,7 @@ public sealed class SocketPipelineListener : IServerListener
         var sessions = _activeSessions.Values.ToArray();
         foreach (var session in sessions)
         {
+            // 동기 Stop()에서 async Dispose 완료까지 블록(sync-over-async). I/O 스레드가 아닌 종료 경로라 데드락 위험 없음.
             try { session.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch { /* 개별 세션 정리 실패는 나머지 정리를 중단시키지 않는다 */ }
         }
@@ -132,6 +136,7 @@ public sealed class SocketPipelineListener : IServerListener
         {
             try
             {
+                // AcceptAsync: 커널 큐의 다음 연결을 비동기 대기 — 동기 Accept()와 달리 스레드풀 스레드를 점유하지 않음
                 var clientSocket = await _listenSocket!.AcceptAsync(ct);
                 ConfigureSocket(clientSocket);
                 var session = new SocketPipelineSession(clientSocket);
@@ -165,6 +170,7 @@ public sealed class SocketPipelineListener : IServerListener
     private static void ConfigureSocket(Socket socket)
     {
         socket.NoDelay = true;  // Nagle 알고리즘 비활성화 (게임 서버 필수)
+        // TCP keep-alive: 유휴 후 OS가 주기적 probe로 죽은 피어(NAT 매핑 만료·WiFi 끊김 등)를 탐지 → 좀비 세션 방지
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
     }
 }

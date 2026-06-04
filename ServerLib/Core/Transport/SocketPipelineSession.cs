@@ -22,12 +22,15 @@ public sealed class SocketPipelineSession : ISession
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
+    // Interlocked.Read: IdleTimeout 스윕 등 다른 스레드가 읽으므로 acquire 배리어로 최신 타임스탬프 가시성 보장 (FillPipeAsync 쓰기와 경합)
     public DateTimeOffset LastReceivedAt => new DateTimeOffset(Interlocked.Read(ref _lastReceivedAtTicks), TimeSpan.Zero);
 
+    // Volatile.Read: IO 스레드 쓰기·앱 스레드 읽기 간 재정렬 방지로 최신 상태값 가시성 보장
     public SessionState State => new SessionState(Volatile.Read(ref _state));
 
     public object? Context
     {
+        // Volatile read/write: 참조를 원자적으로 교체하고 모든 스레드가 최신 컨텍스트를 관찰하도록 보장
         get => Volatile.Read(ref _context);
         set => Volatile.Write(ref _context, value);
     }
@@ -62,6 +65,7 @@ public sealed class SocketPipelineSession : ISession
 
     public void StartReceiving()
     {
+        // fill/read 두 루프는 각자 _cts로 수명·취소를 관리하므로 await 없이 분리 구동(fire-and-forget)해도 안전
         _ = FillPipeAsync(_cts.Token);
         _ = ReadPipeAsync(_cts.Token);
     }
@@ -74,15 +78,18 @@ public sealed class SocketPipelineSession : ISession
         {
             while (!ct.IsCancellationRequested)
             {
+                // GetMemory + ReceiveAsync(Memory): PipeWriter 내부 풀 버퍼에 커널이 직접 수신.
+                // byte[] 오버로드와 달리 수신마다 힙 할당이 없다(zero-copy).
                 var memory = writer.GetMemory(MinBufferSize);
                 int bytesRead = await _socket.ReceiveAsync(memory, SocketFlags.None, ct);
-                if (bytesRead == 0) break;
+                if (bytesRead == 0) break; // 0바이트 = 상대의 정상 종료(graceful close)
                 // 단일 writer(FillPipeAsync)이므로 Volatile.Write로 충분 (64-bit aligned long)
                 Volatile.Write(ref _lastReceivedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
 
-                writer.Advance(bytesRead);
+                writer.Advance(bytesRead); // 쓰기 위치만 커밋 (아직 reader에 신호 안 함)
+                // FlushAsync: reader를 깨우고 백프레셔 적용 — reader가 느리면 수신을 멈춰 Pipe 무한 증가 방지.
                 var flush = await writer.FlushAsync(ct);
-                if (flush.IsCompleted) break;
+                if (flush.IsCompleted) break; // reader 측이 Pipe를 완료(종료)함
             }
         }
         catch (OperationCanceledException) { }
@@ -101,6 +108,7 @@ public sealed class SocketPipelineSession : ISession
         {
             while (!ct.IsCancellationRequested)
             {
+                // ReadAsync가 돌려주는 ReadOnlySequence는 Pipe 세그먼트를 그대로 참조(zero-copy) — 누적 데이터를 복사 없이 노출
                 var result = await reader.ReadAsync(ct);
                 var buffer = result.Buffer;
                 var consumed = buffer.Start;
@@ -112,7 +120,8 @@ public sealed class SocketPipelineSession : ISession
                     consumed = buffer.Start;
                 }
 
-                // consumed: 처리 완료된 위치, examined: 검사한 끝까지 (더 많은 데이터 대기)
+                // AdvanceTo(consumed, examined): consumed까지는 버려도 되지만 examined까지는 "봤으나 미완성"이라
+                // Pipe가 보존하게 한다 → 패킷이 세그먼트 경계에 걸쳐 분할 도착해도 다음 ReadAsync에서 이어붙는다(부분 패킷 프레이밍 핵심).
                 reader.AdvanceTo(consumed, examined);
 
                 if (result.IsCompleted) break;
@@ -162,12 +171,15 @@ public sealed class SocketPipelineSession : ISession
     {
         if (OnReceived == null) return;
 
+        // Fast-path: 대부분의 패킷은 단일 세그먼트(Pipe 버퍼 내 연속 메모리)이므로
+        // ArrayPool 대여 없이 First 슬라이스를 그대로 콜백에 넘긴다(무할당).
         if (packet.IsSingleSegment)
         {
             await OnReceived(packet.First);
         }
         else
         {
+            // 세그먼트 경계에 걸친 드문 경우만 연속 버퍼로 병합 필요 → 영구 배열 할당 대신 ArrayPool 임대로 GC 압력 억제.
             var length = (int)packet.Length;
             var rented = ArrayPool<byte>.Shared.Rent(length);
             try
@@ -177,19 +189,21 @@ public sealed class SocketPipelineSession : ISession
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(rented);
+                ArrayPool<byte>.Shared.Return(rented); // 풀에 반납하여 다음 멀티세그먼트 패킷이 재사용
             }
         }
     }
 
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
+        // Volatile.Read: DisposeAsync와 동시 호출 경합 시 해제 플래그의 최신값을 관찰
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
         await _socket.SendAsync(data, SocketFlags.None, cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
     {
+        // Interlocked.Exchange: 이전 값을 원자적으로 반환 → 첫 호출자만 진행, 이후 호출은 즉시 반환(멱등 Dispose)
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
         await _cts.CancelAsync();
