@@ -25,6 +25,32 @@ public interface IClientConnection : IAsyncDisposable
     bool IsConnected { get; }
 
     /// <summary>
+    /// 자동 하트비트 PING 송신 주기입니다. <see langword="null"/>이면 하트비트를 비활성화합니다(기본값).
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="ConnectAsync"/> 호출 전에 설정해야 합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// </list>
+    /// </remarks>
+    TimeSpan? PingInterval { get; set; }
+
+    /// <summary>
+    /// 마지막으로 측정된 왕복 지연(RTT)입니다. 측정 전에는 <see cref="TimeSpan.Zero"/>입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. Volatile read로 최신값을 반환합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation (값 타입).</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking. PONG 수신 시마다 갱신됩니다.</description></item>
+    /// </list>
+    /// </remarks>
+    TimeSpan Rtt { get; }
+
+    /// <summary>
     /// 서버 연결이 성공적으로 수립된 직후 호출되는 콜백입니다.
     /// </summary>
     /// <remarks>

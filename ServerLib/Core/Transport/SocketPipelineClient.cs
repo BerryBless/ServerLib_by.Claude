@@ -15,8 +15,12 @@ public sealed class SocketPipelineClient : IClientConnection
     private Pipe? _pipe;
     private CancellationTokenSource? _cts;
     private int _disposed;
+    private long _rttTicks; // 마지막 RTT(ticks) — Volatile로 갱신/읽기
 
     public bool IsConnected => _socket?.Connected ?? false;
+    public TimeSpan? PingInterval { get; set; }
+    // Volatile.Read: 수신 루프(writer)와 앱(reader) 간 최신 RTT 가시성 보장
+    public TimeSpan Rtt => new TimeSpan(Volatile.Read(ref _rttTicks));
     public Func<ValueTask>? OnConnected { get; set; }
     public Func<ValueTask>? OnDisconnected { get; set; }
     public Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }
@@ -37,6 +41,10 @@ public sealed class SocketPipelineClient : IClientConnection
         // fill/read 두 루프는 _cts로 자체 수명·취소를 관리하므로 await 없이 분리 구동(fire-and-forget)
         _ = FillPipeAsync(_cts.Token);
         _ = ReadPipeAsync(_cts.Token);
+
+        // PingInterval이 설정된 경우에만 하트비트 루프 시작
+        if (PingInterval.HasValue)
+            _ = PingLoopAsync(PingInterval.Value, _cts.Token);
 
         if (OnConnected != null)
             await OnConnected();
@@ -69,6 +77,40 @@ public sealed class SocketPipelineClient : IClientConnection
         }
     }
 
+    // 주기적으로 PING을 송신한다. 송신 버퍼는 1회 대여해 재사용(steady-state 무할당).
+    private async Task PingLoopAsync(TimeSpan interval, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(interval);
+        var buf = ArrayPool<byte>.Shared.Rent(HeartbeatProtocol.MaxPacketSize);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                int written = HeartbeatProtocol.BuildPing(DateTimeOffset.UtcNow.UtcTicks, buf);
+                try { await SendAsync(buf.AsMemory(0, written), ct); }
+                catch (ObjectDisposedException) { break; }
+                catch (System.Net.Sockets.SocketException) { }
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally { ArrayPool<byte>.Shared.Return(buf); }
+    }
+
+    // 동기 헬퍼: packet이 PONG이면 RTT를 계산해 _rttTicks를 갱신하고 true. 아니면 false.
+    private bool TryHandlePong(ReadOnlySequence<byte> packet)
+    {
+        if (packet.Length > HeartbeatProtocol.MaxPacketSize) return false;
+        Span<byte> tmp = stackalloc byte[HeartbeatProtocol.MaxPacketSize];
+        int len = (int)packet.Length;
+        packet.CopyTo(tmp);
+        if (HeartbeatProtocol.TryComputeRtt(tmp[..len], DateTimeOffset.UtcNow.UtcTicks, out long rtt))
+        {
+            Volatile.Write(ref _rttTicks, rtt);
+            return true;
+        }
+        return false;
+    }
+
     // 패킷 프레이밍: 완전한 패킷 단위로 OnReceived 호출
     private async Task ReadPipeAsync(CancellationToken ct)
     {
@@ -85,6 +127,12 @@ public sealed class SocketPipelineClient : IClientConnection
 
                 while (TryReadPacket(ref buffer, out var packet))
                 {
+                    // 예약 ID 가로채기: PONG이면 RTT만 갱신하고 앱 OnReceived는 호출하지 않는다.
+                    if (TryHandlePong(packet))
+                    {
+                        consumed = buffer.Start;
+                        continue;
+                    }
                     if (OnReceived != null)
                     {
                         // Fast-path: 대부분 패킷은 단일 세그먼트(연속 메모리) → ArrayPool 대여 없이 그대로 콜백(무할당)

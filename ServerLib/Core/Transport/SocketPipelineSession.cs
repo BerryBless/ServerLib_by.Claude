@@ -169,6 +169,18 @@ public sealed class SocketPipelineSession : ISession
 
     private async ValueTask DispatchPacketAsync(ReadOnlySequence<byte> packet)
     {
+        // 예약 ID 가로채기: PING이면 PONG을 회신하고 앱 OnReceived는 호출하지 않는다.
+        // (stackalloc이 await를 넘지 못하므로 동기 헬퍼에서 풀 버퍼로 빌드 후 여기서 송신)
+        var pongBuf = TryBuildPongBuffer(packet, out int pongLen);
+        if (pongBuf != null)
+        {
+            try { await SendAsync(pongBuf.AsMemory(0, pongLen)); }
+            catch (ObjectDisposedException) { }
+            catch (SocketException) { }
+            finally { ArrayPool<byte>.Shared.Return(pongBuf); }
+            return;
+        }
+
         if (OnReceived == null) return;
 
         // Fast-path: 대부분의 패킷은 단일 세그먼트(Pipe 버퍼 내 연속 메모리)이므로
@@ -192,6 +204,24 @@ public sealed class SocketPipelineSession : ISession
                 ArrayPool<byte>.Shared.Return(rented); // 풀에 반납하여 다음 멀티세그먼트 패킷이 재사용
             }
         }
+    }
+
+    // 동기 헬퍼: packet이 PING이면 PONG을 풀 버퍼에 빌드해 반환(written>0), 아니면 null.
+    // stackalloc을 async 메서드(await 경계)에서 분리하기 위해 동기로 둔다.
+    private static byte[]? TryBuildPongBuffer(ReadOnlySequence<byte> packet, out int written)
+    {
+        written = 0;
+        if (packet.Length > HeartbeatProtocol.MaxPacketSize) return null; // 하트비트는 12B 고정, 더 크면 일반 패킷
+        Span<byte> tmp = stackalloc byte[HeartbeatProtocol.MaxPacketSize];
+        int len = (int)packet.Length;
+        packet.CopyTo(tmp);
+        Span<byte> pong = stackalloc byte[HeartbeatProtocol.MaxPacketSize];
+        int w = HeartbeatProtocol.TryBuildPong(tmp[..len], pong);
+        if (w == 0) return null;
+        var buf = ArrayPool<byte>.Shared.Rent(w);
+        pong[..w].CopyTo(buf);
+        written = w;
+        return buf;
     }
 
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
