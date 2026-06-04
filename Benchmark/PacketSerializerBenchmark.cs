@@ -7,7 +7,6 @@ using ServerLib.Core.Memory;
 namespace Benchmark;
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net90)]
 public class PacketSerializerBenchmark
 {
     private byte[] _destBuffer = null!;

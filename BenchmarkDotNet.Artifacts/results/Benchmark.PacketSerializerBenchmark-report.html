@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Benchmark.PacketSerializerBenchmark-20260604-205940</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.14.0, Windows 11 (10.0.26200.8457)
+Intel Core i9-14900K, 1 CPU, 32 logical and 24 physical cores
+.NET SDK 10.0.300
+  [Host] : .NET 10.0.8 (10.0.826.23019), X64 RyuJIT AVX2
+</code></pre>
+<pre><code></code></pre>
+
+<table>
+<thead><tr><th>Method                             </th><th>Job</th><th>Runtime</th><th>IterationCount</th><th>LaunchCount</th><th>WarmupCount</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Ratio</th><th>RatioSD</th><th>Gen0</th><th>Allocated</th><th>Alloc Ratio</th>
+</tr>
+</thead><tbody><tr><td>&#39;new byte[] + Encoding.GetBytes&#39;</td><td>.NET 9.0</td><td>.NET 9.0</td><td>Default</td><td>Default</td><td>Default</td><td>NA</td><td>NA</td><td>NA</td><td>?</td><td>?</td><td>NA</td><td>NA</td><td>?</td>
+</tr><tr><td>&#39;ArrayPool.Rent + Span (Zero-Allocation)&#39;</td><td>.NET 9.0</td><td>.NET 9.0</td><td>Default</td><td>Default</td><td>Default</td><td>NA</td><td>NA</td><td>NA</td><td>?</td><td>?</td><td>NA</td><td>NA</td><td>?</td>
+</tr><tr><td>&#39;HeaderParse from Span (Zero-Allocation)&#39;</td><td>.NET 9.0</td><td>.NET 9.0</td><td>Default</td><td>Default</td><td>Default</td><td>NA</td><td>NA</td><td>NA</td><td>?</td><td>?</td><td>NA</td><td>NA</td><td>?</td>
+</tr><tr><td>&#39;new byte[] + Encoding.GetBytes&#39;</td><td>ShortRun</td><td>.NET 10.0</td><td>3</td><td>1</td><td>3</td><td>21.6525 ns</td><td>16.5956 ns</td><td>0.9097 ns</td><td>1.001</td><td>0.05</td><td>0.0068</td><td>128 B</td><td>1.00</td>
+</tr><tr><td>&#39;ArrayPool.Rent + Span (Zero-Allocation)&#39;</td><td>ShortRun</td><td>.NET 10.0</td><td>3</td><td>1</td><td>3</td><td>5.7605 ns</td><td>1.1972 ns</td><td>0.0656 ns</td><td>0.266</td><td>0.01</td><td>-</td><td>-</td><td>0.00</td>
+</tr><tr><td>&#39;HeaderParse from Span (Zero-Allocation)&#39;</td><td>ShortRun</td><td>.NET 10.0</td><td>3</td><td>1</td><td>3</td><td>0.1976 ns</td><td>0.1231 ns</td><td>0.0067 ns</td><td>0.009</td><td>0.00</td><td>-</td><td>-</td><td>0.00</td>
+</tr></tbody></table>
+</body>
+</html>

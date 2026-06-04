@@ -8,7 +8,6 @@ using ServerLib.Core.Transport;
 namespace Benchmark;
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net90)]
 public class SessionSendBenchmark
 {
     private SocketPipelineSession _session = null!;
