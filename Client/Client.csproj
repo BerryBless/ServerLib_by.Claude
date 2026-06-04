@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
+    <ProjectReference Include="..\AppConfig\AppConfig.csproj" />
   </ItemGroup>
 
   <ItemGroup>
