@@ -1,12 +1,19 @@
 using System.Buffers;
+using Microsoft.Extensions.Configuration;
 using ServerLib.Core.Memory;
 using ServerLib.Core.Serialization;
 using ServerLib.Core.Serialization.Packets;
 using ServerLib.Core.Transport;
 
-const string Host = "127.0.0.1";
-const int Port = 9000;
-const int BatchSize = 1000;  // 회당 전송 수 (진행 출력 단위)
+var config = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .Build();
+var cfg = config.GetSection("Client").Get<ClientConfig>() ?? new ClientConfig();
+
+string Host = cfg.Host;
+int Port = cfg.Port;
+int BatchSize = cfg.BatchSize;  // 회당 전송 수 (진행 출력 단위)
 
 if (args.Length > 0 && (!int.TryParse(args[0], out _) || int.Parse(args[0]) < 1))
 {
@@ -18,7 +25,7 @@ if (args.Length > 1 && (!long.TryParse(args[1], out _) || long.Parse(args[1]) < 
     Console.Error.WriteLine("사용법: Client [스레드 수] [스레드당 전송 횟수]  (기본값: 스레드 4, 횟수 무한)");
     return;
 }
-int threadCount = args.Length > 0 ? int.Parse(args[0]) : 4;
+int threadCount = args.Length > 0 ? int.Parse(args[0]) : cfg.DefaultThreadCount;
 long? sendCount = args.Length > 1 ? long.Parse(args[1]) : null;
 
 using var cts = new CancellationTokenSource();
@@ -57,7 +64,8 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
     long total = 0;
 
     await using var conn = new SocketPipelineClient();
-    conn.PingInterval = TimeSpan.FromSeconds(1); // 1초마다 자동 PING → RTT 측정
+    if (cfg.Features.EnableHeartbeat)
+        conn.PingInterval = TimeSpan.FromSeconds(cfg.PingIntervalSeconds); // 자동 PING → RTT 측정
     conn.OnConnected = () =>
     {
         Console.WriteLine($"  [T{i}] connected");
@@ -71,13 +79,13 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
 
     await conn.ConnectAsync(Host, Port, ct);
 
-    if (i == 0)
+    if (i == 0 && cfg.Features.EnableRttDisplay)
     {
         _ = Task.Run(async () =>
         {
             while (!ct.IsCancellationRequested)
             {
-                try { await Task.Delay(2000, ct); }
+                try { await Task.Delay(TimeSpan.FromSeconds(cfg.RttDisplayIntervalSeconds), ct); }
                 catch (OperationCanceledException) { break; }
                 Console.WriteLine($"  [T0] RTT={conn.Rtt.TotalMilliseconds:F1}ms");
             }
