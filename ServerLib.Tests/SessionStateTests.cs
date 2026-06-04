@@ -57,4 +57,22 @@ public sealed class SessionStateTests
         var stub = new StubSession();
         Assert.Null(stub.Context);
     }
+
+    [Fact]
+    public void Session_InitialState_IsConnecting()
+    {
+        var stub = new StubSession();
+        Assert.Equal(SessionState.Connecting, stub.State);
+    }
+
+    [Fact]
+    public void Session_TransitionTo_ChangesStateAndReturnsTrue()
+    {
+        var stub = new StubSession();
+
+        bool result = stub.TransitionTo(SessionState.Authenticated);
+
+        Assert.True(result);
+        Assert.Equal(SessionState.Authenticated, stub.State);
+    }
 }
