@@ -140,6 +140,7 @@ public sealed class SocketPipelineListener : IServerListener
                 {
                     _registrar?.Unregister(session.SessionId);
                     _activeSessions.TryRemove(session.SessionId, out _);
+                    session.TransitionTo(SessionState.Disconnected);
                     if (OnClientDisconnected != null)
                         await OnClientDisconnected(session);
                     await session.DisposeAsync();
@@ -147,6 +148,7 @@ public sealed class SocketPipelineListener : IServerListener
 
                 _registrar?.Register(session);
                 _activeSessions[session.SessionId] = session;
+                session.TransitionTo(SessionState.Connected);
                 session.StartReceiving();
 
                 if (OnClientConnected != null)
