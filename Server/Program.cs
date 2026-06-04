@@ -1,13 +1,19 @@
+using Microsoft.Extensions.Configuration;
 using ServerLib.Core;
 using ServerLib.Core.Memory;
 using ServerLib.Core.Serialization.Packets;
 using ServerLib.Core.Transport;
 using ServerLib.Interface;
 
-const int Port = 9000;
+var config = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .Build();
+var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 
-var registry = new SessionRegistry();
-var metrics = new ServerMetrics();
+// 토글: 레지스트리/메트릭은 비활성 시 생성 자체를 생략(null)
+var registry = cfg.Features.EnableSessionRegistry ? new SessionRegistry() : null;
+var metrics = cfg.Features.EnableMetrics ? new ServerMetrics() : null;
 var listener = new SocketPipelineListener(registry);
 
 var test = 0;
@@ -17,15 +23,15 @@ using var cts = new CancellationTokenSource();
 listener.OnClientConnected = session =>
 {
     session.Context = new GameContext(PlayerId: 1001, Nickname: "홍길동");
-    metrics.OnClientConnected();
-    Console.WriteLine($"[+] {session.RemoteEndPoint}  state={session.State}  (sessions: {metrics.ConnectedCount})");
+    metrics?.OnClientConnected();
+    Console.WriteLine($"[+] {session.RemoteEndPoint}  state={session.State}  (sessions: {metrics?.ConnectedCount ?? 0})");
     return ValueTask.CompletedTask;
 };
 
 listener.OnClientDisconnected = session =>
 {
-    metrics.OnClientDisconnected();
-    Console.WriteLine($"[-] {session.RemoteEndPoint}  (sessions: {metrics.ConnectedCount})  test={Volatile.Read(ref test)}");
+    metrics?.OnClientDisconnected();
+    Console.WriteLine($"[-] {session.RemoteEndPoint}  (sessions: {metrics?.ConnectedCount ?? 0})  test={Volatile.Read(ref test)}");
     return ValueTask.CompletedTask;
 };
 
@@ -34,7 +40,7 @@ listener.OnReceived = (session, data) =>
     if (!PacketPool.TryParseHeader(data.Span, out ushort packetId, out _))
         return ValueTask.CompletedTask;
 
-    metrics.OnPacketReceived();
+    metrics?.OnPacketReceived();
     Interlocked.Increment(ref windowPackets);
 
     if (packetId == IncrementPacket.Id)
@@ -45,26 +51,31 @@ listener.OnReceived = (session, data) =>
     return ValueTask.CompletedTask;
 };
 
-listener.IdleTimeout = TimeSpan.FromSeconds(30);
-listener.OnIdleTimeout = session =>
+// 토글: 유휴 타임아웃은 활성 시에만 설정(미설정 시 ServerLib가 스윕 루프를 시작하지 않음)
+if (cfg.Features.EnableIdleTimeout)
 {
-    Console.WriteLine($"[Timeout] {session.RemoteEndPoint}  idle={DateTimeOffset.UtcNow - session.LastReceivedAt:mm\\:ss}");
-    return ValueTask.CompletedTask;
-};
+    listener.IdleTimeout = TimeSpan.FromSeconds(cfg.IdleTimeoutSeconds);
+    listener.OnIdleTimeout = session =>
+    {
+        Console.WriteLine($"[Timeout] {session.RemoteEndPoint}  idle={DateTimeOffset.UtcNow - session.LastReceivedAt:mm\\:ss}");
+        return ValueTask.CompletedTask;
+    };
+}
 
-listener.Start(Port);
-Console.WriteLine($"[Server] port {Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}).");
+listener.Start(cfg.Port);
+Console.WriteLine($"[Server] port {cfg.Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}).");
+Console.WriteLine($"  Features: registry={cfg.Features.EnableSessionRegistry} metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 _ = Task.Run(async () =>
 {
     while (!cts.Token.IsCancellationRequested)
     {
-        try { await Task.Delay(10000, cts.Token); }
+        try { await Task.Delay(TimeSpan.FromSeconds(cfg.MonitorIntervalSeconds), cts.Token); }
         catch (OperationCanceledException) { break; }
 
         long count = Interlocked.Exchange(ref windowPackets, 0);
-        Console.WriteLine($"[Monitor] sessions={metrics.ConnectedCount}  packets/10s={count:N0}  test={Volatile.Read(ref test)}  registry={registry.Count}");
+        Console.WriteLine($"[Monitor] sessions={metrics?.ConnectedCount ?? 0}  packets/{cfg.MonitorIntervalSeconds}s={count:N0}  test={Volatile.Read(ref test)}  registry={registry?.Count ?? 0}");
     }
 });
 
@@ -73,6 +84,11 @@ while (true)
     var line = Console.ReadLine();
     if (line?.Trim().Equals("q", StringComparison.OrdinalIgnoreCase) == true) break;
 
+    if (registry is null)
+    {
+        Console.WriteLine("[Sessions] 세션 레지스트리 비활성화됨 (EnableSessionRegistry=false)");
+        continue;
+    }
     var sessions = registry.GetAll();
     Console.WriteLine($"[Sessions] count={sessions.Count}");
     foreach (var s in sessions)
@@ -81,7 +97,7 @@ while (true)
 
 cts.Cancel();
 listener.Stop();
-Console.WriteLine($"종료  total={metrics.TotalPacketsReceived}  final test={test}");
+Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final test={test}");
 
 // 세션에 부착할 커스텀 컨텍스트 예제
 record GameContext(int PlayerId = 0, string Nickname = "Guest");
