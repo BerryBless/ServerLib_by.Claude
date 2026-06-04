@@ -35,7 +35,7 @@ internal sealed class StubSession : ISession
     }
 
     public async ValueTask DisposeAsync()
-    {
+    {   
         if (WasDisposed) return; // 이중 호출 방어
         WasDisposed = true;
         if (OnDisconnected != null)
