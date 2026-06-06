@@ -9,6 +9,9 @@ using ServerLib.Interface;
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    // AddCommandLine: appsettings.json 위에 args 오버라이드 계층 → 하네스가 포트·주기를 인자로 제어.
+    // 예: Server.exe --Server:Port=9100 --Server:MonitorIntervalSeconds=1
+    .AddCommandLine(args)
     .Build();
 var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 
@@ -21,6 +24,8 @@ var listener = new SocketPipelineListener(registry);
 listener.SessionSendTimeout = TimeSpan.FromSeconds(30);
 
 var test = 0;
+// 권위 수신 카운트: EnableMetrics 토글과 무관하게 항상 증가 — 하네스의 데이터유실 검증 기준값.
+long totalReceived = 0;
 long windowPackets = 0;
 using var cts = new CancellationTokenSource();
 
@@ -47,6 +52,7 @@ listener.OnReceived = (session, data) =>
         return ValueTask.CompletedTask;
 
     metrics?.OnPacketReceived();
+    Interlocked.Increment(ref totalReceived);
     Interlocked.Increment(ref windowPackets);
 
     if (packetId == IncrementPacket.Id)
@@ -82,6 +88,12 @@ _ = Task.Run(async () =>
 
         long count = Interlocked.Exchange(ref windowPackets, 0);
         Console.WriteLine($"[Monitor] sessions={metrics?.ConnectedCount ?? 0}  packets/{cfg.MonitorIntervalSeconds}s={count:N0}  test={Volatile.Read(ref test)}  registry={registry?.Count ?? 0}");
+        // [STATS]: 하네스가 머신 파싱하는 권위 신호(ASCII·고정 key=value). 토글 독립 소스만 사용.
+        Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} " +
+                          $"test={Volatile.Read(ref test)} " +
+                          $"sessions={listener.ActiveSessionCount} " +     // 토글 독립
+                          $"heapBytes={GC.GetTotalMemory(false)} " +        // 서버측 관리 힙(누수 보조 신호)
+                          $"gen2={GC.CollectionCount(2)}");
     }
 });
 
@@ -104,6 +116,8 @@ while (true)
 cts.Cancel();
 listener.Stop();
 Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final test={test}");
+Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} test={test} " +
+                  $"sessions={listener.ActiveSessionCount} heapBytes={GC.GetTotalMemory(false)} gen2={GC.CollectionCount(2)}");
 
 // 세션에 부착할 커스텀 컨텍스트 예제
 record GameContext(int PlayerId = 0, string Nickname = "Guest");
