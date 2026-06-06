@@ -19,13 +19,16 @@ var monitor = new StabilityMonitor(server);
 var monitorTask = monitor.RunAsync(SentTotal, () => reliable.Count, monitorCts.Token);
 
 // 1) 워밍업 & baseline ----------------------------------------------------------
-for (int i = 0; i < Math.Min(10, config.MaxReliableClients); i++)
+// baseline은 ArrayPool·Pipe 버퍼가 데워진 뒤 캡처해야 의미가 있다 — 콜드 baseline은 비현실적으로 낮아 soft 누수 체크가 상시 오탐.
+int warmCount = Math.Min(config.MaxReliableClients, 50);
+for (int i = 0; i < warmCount; i++)
 {
     var c = new ReliableClient();
     await c.ConnectAsync(config.Host, config.Port, CancellationToken.None);
     reliable.Add(c);
 }
-await Task.Delay(2000); // [STATS] 몇 개 수신해 baseline 확보
+await Task.WhenAll(reliable.Select(c => SafeSendAsync(c, 200))); // 풀 워밍업 트래픽
+await Task.Delay(3000); // 서버 처리·[STATS] 갱신 시간
 evidence.HeapBaseline = server.TryGetLatest(out var bs) ? bs.HeapBytes : server.PrivateMemoryBytes;
 Console.WriteLine($"[harness] baseline heapBytes={evidence.HeapBaseline:N0}");
 
@@ -52,10 +55,12 @@ foreach (var ev in timeline)
             server.TryGetLatest(out var snap);
             if (snap.Received == lastReceived) frozenSamples++;
             else { frozenSamples = 0; lastReceived = snap.Received; }
-            if (frozenSamples >= config.HangFrozenSamples && SentTotal() > 0)
+            // 행 판정: received가 K표본 연속 정지 + 미배달 백로그 존재(보낸 수 > 서버 수신 수)일 때만.
+            // 과거 조건 SentTotal()>0은 부하가 모두 배달된 정적 구간에서도 오탐했다 → 백로그 기준으로 교정.
+            if (frozenSamples >= config.HangFrozenSamples && SentTotal() > snap.Received)
             {
                 evidence.HangDetected = true;
-                Console.WriteLine("[harness] HANG 감지 — 부하 중 received 정지.");
+                Console.WriteLine("[harness] HANG 감지 — 부하 중 received 정지(미배달 백로그 존재).");
                 goto AfterBurst;
             }
         }

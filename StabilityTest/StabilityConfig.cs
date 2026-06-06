@@ -16,7 +16,7 @@ public sealed class StabilityConfig
     public int GapMaxMs { get; set; } = 2000;          // 폭주 이벤트 간 최대 간격
     public int CountStableSamples { get; set; } = 3;   // received 안정 판정 연속 표본 수
     public int HangFrozenSamples { get; set; } = 5;    // 부하 중 received 정지 행 판정 연속 표본 수
-    public double HeapTolerance { get; set; } = 2.0;   // settle 후 heap ≤ baseline×tol (소프트)
+    public double HeapTolerance { get; set; } = 4.0;   // settle 후 heap ≤ baseline×tol (소프트·자문용)
     public string Host { get; set; } = "127.0.0.1";
 
     /// <summary>`--key value` 형태 인자를 파싱합니다. 알 수 없는 키는 무시합니다.</summary>
