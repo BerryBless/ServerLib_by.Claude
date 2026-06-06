@@ -76,9 +76,23 @@ StabilityTest ──references──▶ ServerLib (SocketPipelineClient, PacketP
 
 ## 핵심 동작
 
-### 서버 수정: always-on 권위 카운터 + [STATS] 라인
+### 서버 수정: 커맨드라인 설정 + always-on 권위 카운터 + [STATS] 라인
 
-`Server/Program.cs`의 `OnReceived`에서 `EnableMetrics` 토글과 무관하게 단조 증가하는 카운터를 둔다:
+하네스는 child의 **포트**(개발 서버 9000과 충돌 회피)와 **모니터 주기**(count-stable 폴링이 충분히 자주 일어나도록 1초)를 제어해야 한다. 현재 `Server`는 args를 무시하고 자기 바이너리 폴더의 `appsettings.json`만 읽는다(`AppContext.BaseDirectory` 기준). 따라서 `ConfigurationBuilder`에 커맨드라인 소스를 추가한다(예제 서버를 JSON 편집 없이 설정 가능하게 만드는 소폭 개선):
+
+```csharp
+// AddCommandLine: appsettings.json 위에 args 오버라이드 계층을 얹는다 → 하네스가 포트·주기·토글을 인자로 제어.
+// 예: Server.exe --Server:Port=9100 --Server:MonitorIntervalSeconds=1
+var config = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .AddCommandLine(args)
+    .Build();
+```
+
+`Microsoft.Extensions.Configuration.CommandLine` 패키지 참조 추가. 하네스는 `--Server:Port=910x --Server:MonitorIntervalSeconds=1`로 child를 띄운다.
+
+`OnReceived`에서 `EnableMetrics` 토글과 무관하게 단조 증가하는 카운터를 둔다:
 
 ```csharp
 long totalReceived = 0;              // always-on: metrics 토글과 독립한 권위 수신 카운트
@@ -168,7 +182,8 @@ public int ActiveSessionCount => _activeSessions.Count;
 | `StabilityTest/ChaosClient.cs` | 신규 | raw Socket 카오스 클라이언트(연결 폭주·RST, 0바이트) |
 | `StabilityTest/StabilityMonitor.cs` | 신규 | 라이브 콘솔 모니터 |
 | `StabilityTest/StabilityReport.cs` | 신규 | 4개 체크 평가·PASS/FAIL 표·종료 코드 |
-| `Server/Program.cs` | 수정 | always-on `_totalReceived` + 구조화 `[STATS]` 라인(기존 출력 유지) |
+| `Server/Program.cs` | 수정 | `.AddCommandLine(args)` + always-on `_totalReceived` + 구조화 `[STATS]` 라인(기존 출력 유지) |
+| `Server/Server.csproj` | 수정 | `Microsoft.Extensions.Configuration.CommandLine` 패키지 참조 |
 | `ServerLib/Core/Transport/SocketPipelineListener.cs` | 수정 | `public int ActiveSessionCount` 추가 |
 | `ClaudeCodeStudy.sln` | 수정 | `StabilityTest` 프로젝트 등록 |
 
