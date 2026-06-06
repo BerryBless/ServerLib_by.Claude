@@ -14,6 +14,17 @@ public sealed class SocketPipelineListener : IServerListener
 
     public bool IsRunning => _listenSocket != null;
 
+    /// <summary>현재 활성 세션 수입니다. 세션 레지스트리·메트릭 토글과 무관하게 항상 사용 가능합니다.</summary>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey,TValue}.Count"/> 경유 — 주기적 통계(초 단위)용이라 비용 무시 가능.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation. 정수 프로퍼티 읽기.</description></item>
+    /// </list>
+    /// </remarks>
+    // ConcurrentDictionary.Count: 누수 검증의 결정적 신호원 — 폭주(FIN+RST) 후 0 복귀가 정리 경로 완결을 증명한다.
+    public int ActiveSessionCount => _activeSessions.Count;
+
     // E3: 콜백은 Start() 전에만 설정 — IO 루프 가동 중 재할당을 막아 가시성/동작 일관성 보장(IdleTimeout 가드와 동일 패턴).
     private Func<ISession, ValueTask>? _onClientConnected;
     public Func<ISession, ValueTask>? OnClientConnected
