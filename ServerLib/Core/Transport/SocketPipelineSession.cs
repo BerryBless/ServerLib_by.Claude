@@ -26,6 +26,10 @@ public sealed class SocketPipelineSession : ISession
     private object? _context;
     // SemaphoreSlim: 송신 경로 직렬화 — 자동 PONG 회신과 앱 SendAsync가 동일 소켓에 동시 기록하는 것을 막아 Thread-safe 계약을 보장한다.
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    // CancellationTokenSource(재사용): 송신 시한용. _sendGate가 세션당 동시 송신 1건을 보장하므로 단일 인스턴스를
+    // TryReset()으로 매 송신 재사용한다 → 송신마다 new CTS + 내부 Timer를 할당하던 정상부하 GC(실측 패킷당 160B)를 제거.
+    // caller 토큰과 링크하지 않음(A-max): 링크 CTS·Timer 신규 할당을 피해 송신당 Zero-allocation.
+    private CancellationTokenSource? _sendTimeoutCts;
 
     public Guid SessionId { get; } = Guid.NewGuid();
     public EndPoint? RemoteEndPoint { get; }
@@ -74,8 +78,11 @@ public sealed class SocketPipelineSession : ISession
     /// 무한 블록되어 송신 게이트를 영구 점유하고 <see cref="SessionRegistry.BroadcastAsync"/> 전체를 정지시키는 것을 방지합니다.</description></item>
     /// <item><description><b>동작:</b> 시한 초과 시 <see cref="System.Net.Sockets.SocketException"/>(<see cref="System.Net.Sockets.SocketError.TimedOut"/>)을
     /// throw합니다. 호출자의 명시적 취소(<see cref="OperationCanceledException"/>)와 구분되며, BroadcastAsync 등 호출부의 SocketException 처리와 일관됩니다.</description></item>
-    /// <item><description><b>Memory Allocation:</b> <see langword="null"/>(기본)일 때 송신 경로 Zero-allocation 유지.
-    /// 설정 시에만 송신당 <see cref="CancellationTokenSource"/> 1개를 할당합니다(항상-무할당이 필요하면 세션별 송신 큐로 후속 최적화 가능).</description></item>
+    /// <item><description><b>Memory Allocation:</b> 설정 여부와 무관하게 송신당 Zero-allocation입니다.
+    /// 설정 시 시한용 <see cref="CancellationTokenSource"/>를 세션 수명 동안 1개만 두고 <see cref="CancellationTokenSource.TryReset"/>로 매 송신 재사용합니다
+    /// (송신 게이트가 세션당 동시 송신 1건을 보장하므로 안전). 직전 시한이 발화한 직후 송신에서만 드물게 1개를 재생성합니다.</description></item>
+    /// <item><description><b>Cancellation 계약:</b> 설정 시 <see cref="SendAsync"/>의 <c>cancellationToken</c>은 송신 게이트 대기를 취소합니다.
+    /// 단, 이미 시작된(in-flight) 소켓 쓰기는 caller 토큰이 아니라 이 시한으로 bound됩니다(즉시 끊기지 않고 시한 내로 종료). 시한 초과 시 <see cref="System.Net.Sockets.SocketException"/>(TimedOut).</description></item>
     /// <item><description><b>Thread Safety:</b> Thread-safe(단순 참조 읽기/쓰기). <see cref="StartReceiving"/> 전후 어느 시점에든 설정 가능합니다.</description></item>
     /// </list>
     /// </remarks>
@@ -295,21 +302,32 @@ public sealed class SocketPipelineSession : ISession
             var timeout = SendTimeout;
             if (timeout is null)
             {
+                // 시한 미설정: CTS 없이 caller 토큰 직접 사용(무할당).
                 await _socket.SendAsync(data, SocketFlags.None, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                // CancellationTokenSource: 송신당 시한. 기본 경로(timeout=null)는 CTS를 만들지 않아 무할당 유지.
-                // caller 토큰이 취소 가능할 때만 링크(드문 경로) — 죽은 피어가 게이트를 영구 점유하는 것을 시한으로 차단.
-                using var cts = cancellationToken.CanBeCanceled
-                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                    : new CancellationTokenSource();
-                cts.CancelAfter(timeout.Value);
-                try { await _socket.SendAsync(data, SocketFlags.None, cts.Token).ConfigureAwait(false); }
-                // 내부 시한 만료(caller 취소가 아님)는 SocketException(TimedOut)으로 변환 → BroadcastAsync 등 호출부의
+                // 재사용 CTS 확보: TryReset() 성공 시 기존 CTS+내부 Timer를 재사용 → 송신당 무할당.
+                // 실패(직전 시한이 발화해 이미 취소됨)는 죽은 피어 teardown 경로라 드묾 → 그때만 새로 생성.
+                var cts = _sendTimeoutCts;
+                if (cts is null || !cts.TryReset())
+                {
+                    cts?.Dispose();
+                    cts = _sendTimeoutCts = new CancellationTokenSource();
+                }
+                cts.CancelAfter(timeout.Value); // 내부 Timer를 Change로 재무장 — 새 Timer 할당 없음
+                try
+                {
+                    // A-max: in-flight 소켓 쓰기는 cts(시한)만 관찰. caller 취소는 위 _sendGate.WaitAsync에서 존중하고,
+                    // 진행 중 송신은 시한으로 bound한다(caller 토큰이 in-flight 송신을 즉시 끊지 않음).
+                    await _socket.SendAsync(data, SocketFlags.None, cts.Token).ConfigureAwait(false);
+                }
+                // cts.Token만 넘기므로 OCE=시한 만료 → SocketException(TimedOut)으로 변환. BroadcastAsync 등 호출부의
                 // SocketException 처리와 일관되게 하여 죽은 피어만 끊고 브로드캐스트 전체는 계속 진행되도록 한다.
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException)
                 { throw new SocketException((int)SocketError.TimedOut); }
+                // 타이머 무장 해제: 송신 간 유휴 구간에 타이머가 발화해 다음 TryReset을 실패(→재할당)시키는 것을 막는다.
+                finally { cts.CancelAfter(Timeout.InfiniteTimeSpan); }
             }
         }
         finally { _sendGate.Release(); }
@@ -327,5 +345,6 @@ public sealed class SocketPipelineSession : ISession
         _cts.Dispose();
         Volatile.Write(ref _context, null); // 민감 데이터 잔류 방지 (CWE-212/459) — 사용자 컨텍스트 참조 해제
         _sendGate.Dispose();
+        _sendTimeoutCts?.Dispose(); // 재사용 송신 시한 CTS 해제(진행 중 송신과의 경합은 _sendGate.Dispose와 동일 저위험 race)
     }
 }

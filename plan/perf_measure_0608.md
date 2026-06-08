@@ -42,8 +42,28 @@ bytesPerPacket이 OFF에서 160→0.02로 격감하고 gen0이 완전 제거됨 
   - 검증 방법: 본 측정을 그대로 재실행(`SendTimeout=30` + 수정 A)해 `bytesPerPacket`이 ON 상태에서도 ~0으로 떨어지는지 확인 → 회귀 없이 hang 방어 유지.
 - **수정안 B (보류):** 송신 큐(`Channel`) 리팩토링은 이번 측정으로 정당화되지 않음(처리량 병목 아님). `SendAsync` 버퍼 소유권 계약 재설계 지뢰가 있어, 향후 처리량/HOL이 실측 병목으로 확인될 때 별도 설계 사이클로.
 
+## Fix A(A-max) 결과 — 적용 후 재측정 (2026-06-08)
+
+수정안 A를 **A-max**(재사용 CTS + `TryReset()`, caller 토큰 비링크)로 구현(`SocketPipelineSession.cs`·`SocketPipelineClient.cs`: 재사용 `_sendTimeoutCts` 필드, timeout 분기 재작성, `DisposeAsync` 해제, XML 문서 갱신). 동일 워크로드(8스레드×50만=400만, SendTimeout=30s ON) 재측정:
+
+| 지표 | Before (per-send CTS) | After (Fix A, ON) | 결과 |
+|------|----------------------:|------------------:|------|
+| **bytesPerPacket** | 160.03 | **0.02–0.03** | ON 상태에서도 OFF와 동일(무할당 달성) |
+| gen0 GC(4M) | 34 | **0** | 송신 경로 GC 압력 제거 |
+| 처리량(pkt/s) | ~283k | ~283–288k | 불변(loopback 바운드, 예상대로) |
+
+**무결성:** 서버 graceful 종료 `[STATS] received=4,000,000 == sent`, `test=0`(증가 200만·감소 200만 균형 정확), 서버 gen0=0 → 할당 제거가 패킷 유실·손상·로직 오류를 유발하지 않음.
+
+**시한 발화 회귀(필수 검증, 임시 하네스로 실증 후 제거):** 드레인하지 않는 피어 + `SendTimeout=1s`로 발화 강제 →
+- 첫 시한: `SocketException(SocketErrorCode=TimedOut)` 정상 반환(64KB×4회로 송신 버퍼 포화 후 발화).
+- 재할당 경로(직전 발화로 cts 취소됨 → 다음 송신 `TryReset` 실패 → 새 CTS): 크래시·`finally` 예외 없이 다시 `TimedOut` 반환.
+- 판정 **PASS**. catch에서 `when (!cancellationToken...)` 필터를 제거(cts.Token만 관찰)했어도 시한→TimedOut 변환 계약 유지 확인.
+
+**서버 송신 경로 검증(하트비트 ON 스모크):** 위 측정은 클라이언트 `SendAsync`만 실행하므로, 별도로 하트비트를 켜고(`Client.exe 2 3000000`) 클라 PING → 서버 `SocketPipelineSession.SendAsync`(재사용 CTS PONG 경로) → 클라 RTT 왕복을 실행했다. 결과: **RTT=0.1ms(>0), 예외 없음, bytesPerPacket=0.04·gen0=0, received=6,000,000==sent.** 두 SendAsync(클라이언트·세션) 모두 정상 실행 확인.
+
+**결론:** P3-잔여①(송신당 160B) 제거 완료. SendTimeout의 hang 방어(P3 본래 목적)는 유지. 공개 계약 소폭 축소(caller 토큰이 in-flight 소켓 쓰기를 즉시 끊지 않고 SendTimeout 내로 bound)는 XML 문서에 명시.
+
 ## 남은 측정 계측 (코드에 잔존)
 
 - `Client/Program.cs`: `[CLIENTSTATS]` 출력 + `ClientConfig.SendTimeoutSeconds` 토글(0=비활성) — 수정 A 전후 비교에 재사용.
 - `Server/Program.cs`: `[STATS]`에 `allocBytes`(GC.GetTotalAllocatedBytes)·`gen0` 추가.
-- 라이브러리(`ServerLib`)는 미수정.
