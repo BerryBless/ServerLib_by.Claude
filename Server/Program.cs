@@ -93,6 +93,8 @@ _ = Task.Run(async () =>
                           $"test={Volatile.Read(ref test)} " +
                           $"sessions={listener.ActiveSessionCount} " +     // 토글 독립
                           $"heapBytes={GC.GetTotalMemory(false)} " +        // 서버측 관리 힙(누수 보조 신호)
+                          $"allocBytes={GC.GetTotalAllocatedBytes()} " +    // 누적 할당 바이트(수신·송신 경로 alloc률 보조 신호)
+                          $"gen0={GC.CollectionCount(0)} " +
                           $"gen2={GC.CollectionCount(2)}");
     }
 });
@@ -117,7 +119,8 @@ cts.Cancel();
 listener.Stop();
 Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final test={test}");
 Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} test={test} " +
-                  $"sessions={listener.ActiveSessionCount} heapBytes={GC.GetTotalMemory(false)} gen2={GC.CollectionCount(2)}");
+                  $"sessions={listener.ActiveSessionCount} heapBytes={GC.GetTotalMemory(false)} " +
+                  $"allocBytes={GC.GetTotalAllocatedBytes()} gen0={GC.CollectionCount(0)} gen2={GC.CollectionCount(2)}");
 
 // 세션에 부착할 커스텀 컨텍스트 예제
 record GameContext(int PlayerId = 0, string Nickname = "Guest");

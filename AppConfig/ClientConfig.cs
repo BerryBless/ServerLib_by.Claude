@@ -9,6 +9,8 @@ public sealed class ClientConfig
     public int DefaultThreadCount { get; set; } = 4;
     public int PingIntervalSeconds { get; set; } = 1;
     public int RttDisplayIntervalSeconds { get; set; } = 2;
+    /// <summary>송신 1건의 시한(초). 0이면 비활성(SendAsync 송신당 CTS 미할당). A/B 측정용 토글.</summary>
+    public int SendTimeoutSeconds { get; set; } = 30;
     public ClientFeatures Features { get; set; } = new();
 }
 
