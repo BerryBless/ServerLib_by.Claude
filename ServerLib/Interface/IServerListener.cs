@@ -51,6 +51,22 @@ public interface IServerListener
     Func<ISession, ValueTask>? OnClientDisconnected { get; set; }
 
     /// <summary>
+    /// 세션의 수신 처리 중 예외(손상/악성 패킷 또는 <see cref="OnReceived"/> 핸들러 예외)로 인해
+    /// 해당 세션이 강제 종료될 때 호출되는 콜백입니다. (<see cref="ISession.OnReceiveError"/>의 리스너 레벨 통지)
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 에러로 인한 세션 종료를 정상 종료·유휴 타임아웃과 구분해 관측하기 위함입니다.
+    /// 이 콜백이 발화한 세션은 직후 <see cref="OnClientDisconnected"/>를 거쳐 해제됩니다.
+    /// <br/><br/>
+    /// <b>[Thread Context:]</b> 해당 세션의 수신 I/O 스레드에서 호출됩니다. 동기 블로킹 금지.
+    /// <br/><br/>
+    /// <b>[Guarantee:]</b> 에러 종료 경로에서만, 세션당 최대 1회 발화합니다. 정상 종료 경로에서는 호출되지 않습니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
+    /// </remarks>
+    Func<ISession, Exception, ValueTask>? OnClientError { get; set; }
+
+    /// <summary>
     /// 클라이언트로부터 데이터가 수신될 때 호출되는 콜백입니다.
     /// </summary>
     /// <remarks>

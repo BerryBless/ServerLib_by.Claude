@@ -70,6 +70,17 @@ public sealed class SocketPipelineSession : ISession
         }
     }
 
+    private Func<Exception, ValueTask>? _onReceiveError;
+    public Func<Exception, ValueTask>? OnReceiveError
+    {
+        get => _onReceiveError;
+        set
+        {
+            if (_receiving) throw new InvalidOperationException("OnReceiveError는 StartReceiving() 호출 전에만 설정할 수 있습니다.");
+            _onReceiveError = value;
+        }
+    }
+
     /// <summary>송신 1건의 최대 허용 시간입니다. <see langword="null"/>(기본값)이면 비활성화됩니다.</summary>
     /// <remarks>
     /// <b>[성능 및 동시성 제약 조건]</b>
@@ -167,7 +178,26 @@ public sealed class SocketPipelineSession : ISession
 
                 while (TryReadPacket(ref buffer, out var packet, out var packetId))
                 {
-                    await DispatchPacketAsync(packet, packetId);
+                    try
+                    {
+                        await DispatchPacketAsync(packet, packetId);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // A3: 손상/악성 본문 디코드 실패(SpanReader EndOfStreamException 등)나 앱 OnReceived 핸들러 예외를
+                        // 패킷 단위로 격리한다. 이 catch가 없으면 예외가 fire-and-forget인 이 루프 밖으로 새어 나가
+                        // 미관측 Task 예외가 되고, 수신이 조용히 멈춘 좀비 세션이 남는다.
+                        // 프로토콜 위반/핸들러 실패는 해당 세션만 정상 종료한다(아래 finally → OnDisconnected → DisposeAsync로
+                        // 소켓·FillPipe 루프까지 정리). 종료 원인을 정상/유휴 종료와 구분하도록 OnReceiveError로 통지한다.
+                        var onError = OnReceiveError;
+                        if (onError != null)
+                        {
+                            // 통지 콜백 자체의 예외가 정리 경로를 막지 않도록 격리한다.
+                            try { await onError(ex).ConfigureAwait(false); }
+                            catch { /* 통지 실패는 무시 — 세션 정리는 계속 진행 */ }
+                        }
+                        return; // 메서드 종료 → finally가 reader.CompleteAsync + OnDisconnected 수행
+                    }
                     consumed = buffer.Start;
                 }
 

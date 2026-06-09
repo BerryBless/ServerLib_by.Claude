@@ -142,6 +142,25 @@ public interface ISession : IAsyncDisposable
     Func<ValueTask>? OnDisconnected { get; set; }
 
     /// <summary>
+    /// 수신 처리 중 예외가 발생했을 때(손상/악성 패킷 디코드 실패, <see cref="OnReceived"/> 핸들러 예외 등) 호출되는 콜백입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 수신 루프는 비-취소 예외가 새어 나가면 미관측 Task 예외로 조용히 죽어 좀비 세션이 됩니다.
+    /// 라이브러리는 이런 예외를 패킷 단위로 격리하여 해당 세션만 정상 종료하는데, 이 콜백은 그 종료가
+    /// <b>정상/유휴 종료와 구분되도록</b> 원인 예외를 통지합니다. 이 콜백 직후 <see cref="OnDisconnected"/>가 발화하며 세션이 해제됩니다.
+    /// <br/><br/>
+    /// <b>[Thread Context:]</b> 해당 세션의 수신 I/O 스레드에서 호출됩니다. 동기 블로킹 금지.
+    /// <br/><br/>
+    /// <b>[Guarantee:]</b> 세션당 최대 1회(에러 종료 시에만) 호출됩니다. 정상 종료(0바이트)·유휴 타임아웃·취소 경로에서는 발화하지 않습니다.
+    /// 이 콜백 자체가 throw해도 세션 정리는 계속 진행됩니다(예외는 격리됨).
+    /// <br/><br/>
+    /// <b>[Memory Allocation:]</b> 정상 경로(에러 없음)에서는 호출되지 않으므로 Zero-allocation입니다.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> 세션 수신 시작 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
+    /// </remarks>
+    Func<Exception, ValueTask>? OnReceiveError { get; set; }
+
+    /// <summary>
     /// 원격 클라이언트에게 데이터를 비동기로 전송합니다.
     /// </summary>
     /// <param name="data">전송할 데이터 버퍼입니다. 메서드가 반환될 때까지 메모리가 유효해야 합니다.</param>

@@ -58,6 +58,17 @@ public sealed class SocketPipelineListener : IServerListener
             _onReceived = value;
         }
     }
+
+    private Func<ISession, Exception, ValueTask>? _onClientError;
+    public Func<ISession, Exception, ValueTask>? OnClientError
+    {
+        get => _onClientError;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("OnClientError는 Start() 호출 전에만 설정할 수 있습니다.");
+            _onClientError = value;
+        }
+    }
     private TimeSpan? _idleTimeout;
     public TimeSpan? IdleTimeout
     {
@@ -200,6 +211,7 @@ public sealed class SocketPipelineListener : IServerListener
                 ConfigureSocket(clientSocket);
                 var session = new SocketPipelineSession(clientSocket) { SendTimeout = SessionSendTimeout };
                 session.OnReceived = data => OnReceived?.Invoke(session, data) ?? ValueTask.CompletedTask;
+                session.OnReceiveError = ex => OnClientError?.Invoke(session, ex) ?? ValueTask.CompletedTask;
                 session.OnDisconnected = async () =>
                 {
                     _registrar?.Unregister(session.SessionId);

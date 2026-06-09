@@ -46,6 +46,14 @@ listener.OnClientDisconnected = session =>
     return ValueTask.CompletedTask;
 };
 
+// OnClientError: 손상/악성 패킷 디코드 실패나 OnReceived 핸들러 예외로 세션이 강제 종료될 때 통지받는다.
+// 이 통지가 없으면 에러 종료가 정상 종료·유휴 타임아웃과 구분되지 않아 핸들러 버그가 조용히 묻힌다.
+listener.OnClientError = (session, ex) =>
+{
+    Console.WriteLine($"[!] {session.RemoteEndPoint}  수신 오류 → 세션 종료: {ex.GetType().Name}: {ex.Message}");
+    return ValueTask.CompletedTask;
+};
+
 listener.OnReceived = (session, data) =>
 {
     if (!PacketPool.TryParseHeader(data.Span, out ushort packetId, out _))

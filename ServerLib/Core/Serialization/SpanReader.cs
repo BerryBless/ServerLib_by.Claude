@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO;
 using System.Text;
 
 namespace ServerLib.Core.Serialization;
@@ -34,15 +35,40 @@ public ref struct SpanReader
         _position = 0;
     }
 
+    /// <summary>
+    /// 경계 검사(A2): 남은 바이트(<see cref="Remaining"/>)보다 많이 읽으려 하면 즉시 throw합니다.
+    /// </summary>
+    /// <remarks>
+    /// 악성·절단 패킷이 Span 인덱서/Slice의 비결정적 예외(IndexOutOfRange/ArgumentOutOfRange) 대신
+    /// 의미가 명확한 <see cref="EndOfStreamException"/>을 던지게 하여, 상위 디스패치 계층(수신 루프)이
+    /// "손상 패킷"으로 일관되게 격리·세션 종료하도록 한다. <c>(uint)</c> 비교로 음수 <paramref name="count"/>도
+    /// 거대값으로 취급해 함께 차단한다(실패 경로에서만 예외 객체 할당, 정상 경로는 분기 1회뿐 — Zero-allocation 유지).
+    /// </remarks>
+    private void EnsureAvailable(int count)
+    {
+        if ((uint)count > (uint)(_buffer.Length - _position))
+            throw new EndOfStreamException(
+                "SpanReader: 버퍼에 남은 바이트보다 많이 읽으려 했습니다 (손상되었거나 잘린 패킷).");
+    }
+
     /// <summary>1바이트 부호 없는 정수를 읽습니다.</summary>
-    public byte ReadByte() => _buffer[_position++];
+    public byte ReadByte()
+    {
+        EnsureAvailable(1);
+        return _buffer[_position++];
+    }
 
     /// <summary>1바이트 bool 값을 읽습니다 (0이 아니면 true).</summary>
-    public bool ReadBool() => _buffer[_position++] != 0;
+    public bool ReadBool()
+    {
+        EnsureAvailable(1);
+        return _buffer[_position++] != 0;
+    }
 
     /// <summary>2바이트 부호 있는 정수를 LittleEndian으로 읽습니다.</summary>
     public short ReadInt16()
     {
+        EnsureAvailable(2);
         // BinaryPrimitives.Read*: lvalue 메모리(span)를 복사 없이 in-place로 재해석해 값(rvalue)만 추출.
         // Slice(_position) 또한 얕은복사(같은 메모리의 부분 뷰)이므로 중간 버퍼 할당이 전혀 없다.
         var value = BinaryPrimitives.ReadInt16LittleEndian(_buffer.Slice(_position));
@@ -53,6 +79,7 @@ public ref struct SpanReader
     /// <summary>2바이트 부호 없는 정수를 LittleEndian으로 읽습니다.</summary>
     public ushort ReadUInt16()
     {
+        EnsureAvailable(2);
         var value = BinaryPrimitives.ReadUInt16LittleEndian(_buffer.Slice(_position));
         _position += 2;
         return value;
@@ -61,6 +88,7 @@ public ref struct SpanReader
     /// <summary>4바이트 부호 있는 정수를 LittleEndian으로 읽습니다.</summary>
     public int ReadInt32()
     {
+        EnsureAvailable(4);
         var value = BinaryPrimitives.ReadInt32LittleEndian(_buffer.Slice(_position));
         _position += 4;
         return value;
@@ -69,6 +97,7 @@ public ref struct SpanReader
     /// <summary>8바이트 부호 있는 정수를 LittleEndian으로 읽습니다.</summary>
     public long ReadInt64()
     {
+        EnsureAvailable(8);
         var value = BinaryPrimitives.ReadInt64LittleEndian(_buffer.Slice(_position));
         _position += 8;
         return value;
@@ -77,6 +106,7 @@ public ref struct SpanReader
     /// <summary>4바이트 단정밀도 부동소수를 LittleEndian으로 읽습니다.</summary>
     public float ReadFloat()
     {
+        EnsureAvailable(4);
         var value = BinaryPrimitives.ReadSingleLittleEndian(_buffer.Slice(_position));
         _position += 4;
         return value;
@@ -85,6 +115,7 @@ public ref struct SpanReader
     /// <summary>8바이트 배정밀도 부동소수를 LittleEndian으로 읽습니다.</summary>
     public double ReadDouble()
     {
+        EnsureAvailable(8);
         var value = BinaryPrimitives.ReadDoubleLittleEndian(_buffer.Slice(_position));
         _position += 8;
         return value;
@@ -101,6 +132,7 @@ public ref struct SpanReader
     /// </remarks>
     public ReadOnlySpan<byte> ReadBytes(int length)
     {
+        EnsureAvailable(length); // 음수·과대 length를 EndOfStreamException으로 차단(A2)
         // Slice = 얕은복사: 바이트를 복제하지 않고 원본 버퍼의 부분 뷰만 돌려준다(zero-copy).
         // 반환 스팬은 원본 _buffer 수명에 종속되므로 보관하려면 호출자가 따로 깊은복사해야 한다.
         var span = _buffer.Slice(_position, length);
@@ -119,8 +151,10 @@ public ref struct SpanReader
     /// </remarks>
     public string ReadString()
     {
+        EnsureAvailable(2); // 길이 프리픽스 2바이트 확보 후 읽기(A2)
         ushort byteCount = BinaryPrimitives.ReadUInt16LittleEndian(_buffer.Slice(_position));
         _position += 2;
+        EnsureAvailable(byteCount); // 선언된 본문 길이가 남은 버퍼를 초과하면 차단 — 절단 패킷 방어(A2)
         // Encoding.UTF8.GetString = Alloc: UTF-8 바이트를 디코딩해 새 string 객체를 힙에 생성한다(Gen0 압력).
         // string은 불변 참조 타입이라 zero-copy가 불가능 — 이 메서드만 SpanReader에서 유일하게 할당이 발생한다.
         var value = Encoding.UTF8.GetString(_buffer.Slice(_position, byteCount));

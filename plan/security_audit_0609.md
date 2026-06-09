@@ -4,6 +4,7 @@
 - **일자:** 2026-06-09
 - **범위:** A(원격 크래시 / 악성 입력), B(자원 고갈 / DDoS) 전체. **코드 변경 없는 감사 전용 리포트.**
 - **방법:** 네트워크 경계(리스너·세션·역직렬화·디스패치) 정적 분석 + 코드 인용 검증.
+- **수정 상태(2026-06-09):** A1·A2·A3 **수정 완료**(아래 §9 참조). B1~B4는 미착수.
 
 ---
 
@@ -231,3 +232,21 @@ if (_idleTimeout.HasValue)
 | C-1 | `SocketPipelineSession.cs` | 142 |
 | C-3 | `ServerLib/Core/Memory/PacketPool.cs` | 헤더 파싱/`WriteHeader` 가드 |
 | C-4 | `ServerLib/Core/Rudp/RudpSendQueue.cs` | 31, 42-44 |
+
+---
+
+## 9. 수정 이력 — A1·A2·A3 (2026-06-09)
+
+A 등급(원격 크래시) 3건을 수정했다. B 등급(자원 고갈)은 미착수.
+
+| ID | 수정 내용 | 변경 파일 |
+|----|-----------|-----------|
+| A1 | `DispatchAsync`에 `if (packetId >= _handlers.Length) return;` 가드 추가(범위 밖 ID는 미등록과 동일 무시). `Register`는 범위 초과 시 `ArgumentOutOfRangeException`으로 명확화. | `RpcDispatcher.cs` |
+| A2 | `EnsureAvailable(int)` 경계 검사 헬퍼 도입 — 모든 `Read*`가 남은 바이트 초과/음수 길이 시 `EndOfStreamException`을 던지도록 가드. `(uint)` 비교로 음수도 차단. 정상 경로 무할당 유지. | `SpanReader.cs` |
+| A3 | `ReadPipeAsync`의 패킷 디스패치를 `try/catch (when ex is not OperationCanceledException)`로 감싸 예외를 패킷 단위 격리 → 수신 루프 사망(좀비 세션) 방지, 해당 세션만 정상 종료. 종료 원인 관측을 위해 `OnReceiveError`(세션)/`OnClientError`(리스너) 훅 신설·배선. | `SocketPipelineSession.cs`, `SocketPipelineListener.cs`, `ISession.cs`, `IServerListener.cs`, `Server/Program.cs` |
+
+**A3 정책:** 디코드 실패(프로토콜 위반)·핸들러 예외는 해당 세션을 **정상 종료(disconnect)** 한다. 패킷을 건너뛰고 계속하지 않는 이유 — 보안 관점에서 악성 클라이언트가 계속 시도하도록 두지 않기 위함. 정상/유휴 종료와 구분되도록 `OnClientError`로 통지한다.
+
+**검증(2026-06-09):** `dotnet build` 통과(ServerLib·Server, 경고 0). 일회성 end-to-end 스크립트로 동작 실측 — A2 절단 버퍼 `EndOfStreamException`, A1 id≥256 무throw·`Register` 범위초과 throw, A3 핸들러 예외 패킷 시 `OnClientError` 발화 + `ActiveSessionCount→0` + **서버 생존(후속 정상 패킷 처리)** 8/8 PASS. 스크립트는 실행 후 제거.
+
+> **남은 권고:** A2의 `EndOfStreamException`은 BCL 타입이라 의미는 명확하나, 향후 도메인 예외(`InvalidPacketException` 등)로 승격하면 디스패치 계층이 "악성 패킷"과 "핸들러 버그"를 더 정밀히 구분할 수 있다. 현재는 A3 catch가 둘 다 동일 격리한다.
