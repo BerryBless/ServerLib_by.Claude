@@ -131,6 +131,7 @@ private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
 | 2026-06-02 | 초기 구성 | 전체 | 종합 코드 리뷰 하네스 구축 |
+| 2026-06-09 | 보안 가드 감사 | security-reviewer | 해킹·DDoS 공격 표면 점검 (리포트 plan/security_audit_0609.md) |
 
 ---
 
