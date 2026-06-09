@@ -11,6 +11,10 @@ public sealed class SocketPipelineListener : IServerListener
     private CancellationTokenSource? _cts;
     private readonly ISessionRegistrar? _registrar;
     private readonly ConcurrentDictionary<Guid, ISession> _activeSessions = new();
+    // ConcurrentDictionary<IPAddress,int>: IP별 동시 연결 수(B2). IPAddress는 값 기준 Equals/GetHashCode를 구현해 키로 안전.
+    // 증가는 단일 accept 루프(직렬), 감소는 다수 OnDisconnected(병렬) → AddOrUpdate/TryUpdate/TryRemove(KVP)로 원자 갱신.
+    private readonly ConcurrentDictionary<IPAddress, int> _connectionsPerIp = new();
+    private long _rejectedConnections; // Interlocked: 상한 초과 거부 누적(폭주 시 콜백 대신 카운터로 관측)
 
     public bool IsRunning => _listenSocket != null;
 
@@ -99,9 +103,58 @@ public sealed class SocketPipelineListener : IServerListener
     /// </remarks>
     public TimeSpan? SessionSendTimeout { get; set; }
 
+    private int? _maxConnections;
+    public int? MaxConnections
+    {
+        get => _maxConnections;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("MaxConnections는 Start() 호출 전에만 설정할 수 있습니다.");
+            _maxConnections = value;
+        }
+    }
+
+    private int? _maxConnectionsPerIp;
+    public int? MaxConnectionsPerIp
+    {
+        get => _maxConnectionsPerIp;
+        set
+        {
+            if (IsRunning) throw new InvalidOperationException("MaxConnectionsPerIp는 Start() 호출 전에만 설정할 수 있습니다.");
+            _maxConnectionsPerIp = value;
+        }
+    }
+
+    public long TotalRejectedConnections => Interlocked.Read(ref _rejectedConnections);
+
     public SocketPipelineListener(ISessionRegistrar? registrar = null)
     {
         _registrar = registrar;
+    }
+
+    // 거부 처리: 소켓을 닫고 거부 카운터를 증가시킨다. accept 직후 세션 미생성 경로라 Pipe 등 자원 할당 없음(B4).
+    private void RejectConnection(Socket socket)
+    {
+        Interlocked.Increment(ref _rejectedConnections);
+        try { socket.Dispose(); } catch { /* 이미 닫힘/오류는 무시 */ }
+    }
+
+    // IP 동시 연결 수 1 감소. 0 도달 시 엔트리를 제거해 _connectionsPerIp가 무한히 커지는 것을 막는다(IP 순회 공격 방어).
+    // TryRemove(KeyValuePair)/TryUpdate는 "값이 여전히 c일 때만" 적용되는 CAS라 병렬 증감과 경합해도 정확하다.
+    private void DecrementIp(IPAddress ip)
+    {
+        while (_connectionsPerIp.TryGetValue(ip, out var c))
+        {
+            if (c <= 1)
+            {
+                if (_connectionsPerIp.TryRemove(new KeyValuePair<IPAddress, int>(ip, c))) return;
+            }
+            else if (_connectionsPerIp.TryUpdate(ip, c - 1, c))
+            {
+                return;
+            }
+            // 경합으로 실패 시 최신값으로 재시도
+        }
     }
 
     public void Start(int port)
@@ -158,7 +211,9 @@ public sealed class SocketPipelineListener : IServerListener
             // Critical: TryRemove 선점으로 이중 발화 방지
             foreach (var kvp in _activeSessions)
             {
-                if (now - kvp.Value.LastReceivedAt <= timeout) continue;
+                // B3: 바이트 기준(LastReceivedAt)이 아니라 "완전한 패킷" 진척 기준(LastProgressAt)으로 판정한다.
+                // → 1바이트씩 흘려 byte-idle을 회피하는 trickle/slowloris도 진척이 없으면 정리된다.
+                if (now - kvp.Value.LastProgressAt <= timeout) continue;
                 if (_activeSessions.TryRemove(kvp.Key, out var removed))
                     idleSessions.Add(removed);
             }
@@ -209,24 +264,64 @@ public sealed class SocketPipelineListener : IServerListener
                 // AcceptAsync: 커널 큐의 다음 연결을 비동기 대기 — 동기 Accept()와 달리 스레드풀 스레드를 점유하지 않음
                 var clientSocket = await _listenSocket!.AcceptAsync(ct);
                 ConfigureSocket(clientSocket);
-                var session = new SocketPipelineSession(clientSocket) { SendTimeout = SessionSendTimeout };
-                session.OnReceived = data => OnReceived?.Invoke(session, data) ?? ValueTask.CompletedTask;
-                session.OnReceiveError = ex => OnClientError?.Invoke(session, ex) ?? ValueTask.CompletedTask;
-                session.OnDisconnected = async () =>
+
+                // B1: 동시 세션 상한. 단일 accept 루프이므로 Count 검사→등록이 다른 accept와 경합하지 않는다
+                // (동시 제거는 Count만 줄여 보수적으로 동작). _activeSessions는 EnableSessionRegistry 토글과 무관하게
+                // 항상 채워지므로 이 게이트는 토글 상태와 독립적이다.
+                if (_maxConnections is int max && _activeSessions.Count >= max)
                 {
-                    _registrar?.Unregister(session.SessionId);
-                    _activeSessions.TryRemove(session.SessionId, out _);
-                    session.TransitionTo(SessionState.Disconnected);
-                    if (OnClientDisconnected != null)
-                        await OnClientDisconnected(session);
-                    await session.DisposeAsync();
-                };
+                    RejectConnection(clientSocket);
+                    continue;
+                }
 
-                _registrar?.Register(session);
-                _activeSessions[session.SessionId] = session;
-                session.TransitionTo(SessionState.Connected);
-                session.StartReceiving();
+                // B2: IP당 동시 연결 상한. 원자적으로 1 증가 후 초과면 롤백·거부.
+                IPAddress? ip = (clientSocket.RemoteEndPoint as IPEndPoint)?.Address;
+                bool ipReserved = false;
+                if (_maxConnectionsPerIp is int perIp && ip is not null)
+                {
+                    if (_connectionsPerIp.AddOrUpdate(ip, 1, static (_, c) => c + 1) > perIp)
+                    {
+                        DecrementIp(ip); // 초과분 즉시 롤백
+                        RejectConnection(clientSocket);
+                        continue;
+                    }
+                    ipReserved = true;
+                }
 
+                // B4: 위 저비용 검사를 통과한 연결만 세션·Pipe를 할당한다(거부 연결은 자원 미할당).
+                SocketPipelineSession session;
+                try
+                {
+                    session = new SocketPipelineSession(clientSocket) { SendTimeout = SessionSendTimeout };
+                    session.OnReceived = data => OnReceived?.Invoke(session, data) ?? ValueTask.CompletedTask;
+                    session.OnReceiveError = ex => OnClientError?.Invoke(session, ex) ?? ValueTask.CompletedTask;
+                    session.OnDisconnected = async () =>
+                    {
+                        // OnDisconnected는 세션당 정확히 1회 발화 → IP 예약 해제의 유일·확정 지점(accept의 증가 1회와 짝).
+                        if (ipReserved && ip is not null) DecrementIp(ip);
+                        _registrar?.Unregister(session.SessionId);
+                        _activeSessions.TryRemove(session.SessionId, out _);
+                        session.TransitionTo(SessionState.Disconnected);
+                        if (OnClientDisconnected != null)
+                            await OnClientDisconnected(session);
+                        await session.DisposeAsync();
+                    };
+
+                    _registrar?.Register(session);
+                    _activeSessions[session.SessionId] = session;
+                    session.TransitionTo(SessionState.Connected);
+                    session.StartReceiving(); // 이 시점부터 OnDisconnected 발화 보장 → 이후 IP 예약 해제는 그쪽이 담당
+                }
+                catch
+                {
+                    // StartReceiving 이전(세션 생성·등록 중) 실패 시 OnDisconnected가 발화하지 않아 IP 예약이 누수된다.
+                    // 여기서 직접 해제해 leak 윈도를 닫고, 세션 설정 예외가 accept 루프를 죽이지 않도록 다음 연결로 진행한다.
+                    if (ipReserved && ip is not null) DecrementIp(ip);
+                    RejectConnection(clientSocket);
+                    continue;
+                }
+
+                // OnClientConnected는 leak 윈도 밖(StartReceiving 성공 후)에서 호출 — 여기서 throw해도 IP 해제는 OnDisconnected가 담당.
                 if (OnClientConnected != null)
                     await OnClientConnected(session);
             }

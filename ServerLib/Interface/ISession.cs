@@ -59,6 +59,20 @@ public interface ISession : IAsyncDisposable
     DateTimeOffset LastReceivedAt { get; }
 
     /// <summary>
+    /// 마지막으로 <b>완전한 패킷 1개</b>를 프레이밍한 정확한 시각(UTC)입니다. 연결 수립 시 <see cref="ConnectedAt"/>과 동일값으로 초기화됩니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적(B3):]</b> <see cref="LastReceivedAt"/>은 <b>바이트 1개라도</b> 수신되면 갱신되므로,
+    /// 공격자가 타임아웃보다 짧은 주기로 1바이트씩 흘리면(slowloris/slow-read) 유휴 감지를 회피할 수 있습니다.
+    /// 이 속성은 <b>의미 있는 진척(완전한 패킷 수신)</b>이 있을 때만 갱신되므로, 유휴 타임아웃 판정의 안전한 기준이 됩니다.
+    /// 헤더만 보내고 본문을 흘리는 연결, 연결 후 침묵하는 연결 모두 진척이 없어 정리 대상이 됩니다.
+    /// <br/><br/>
+    /// <b>[Thread Safety:]</b> Thread-safe. Interlocked 기반 원자적 갱신·읽기.
+    /// <b>[Memory Allocation:]</b> Zero-allocation. <b>[Blocking:]</b> Non-blocking.
+    /// </remarks>
+    DateTimeOffset LastProgressAt { get; }
+
+    /// <summary>
     /// 현재 세션의 생명주기 상태입니다.
     /// </summary>
     /// <remarks>

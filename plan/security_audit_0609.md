@@ -4,7 +4,7 @@
 - **일자:** 2026-06-09
 - **범위:** A(원격 크래시 / 악성 입력), B(자원 고갈 / DDoS) 전체. **코드 변경 없는 감사 전용 리포트.**
 - **방법:** 네트워크 경계(리스너·세션·역직렬화·디스패치) 정적 분석 + 코드 인용 검증.
-- **수정 상태(2026-06-09):** A1·A2·A3 **수정 완료**(아래 §9 참조). B1~B4는 미착수.
+- **수정 상태(2026-06-09):** A1·A2·A3·B1·B2·B3·B4 **수정 완료**(아래 §9 참조). B2의 동시 연결 제한은 적용, **초당 속도 제한(rate limiting)은 네트워크 계층에 위임**(미구현).
 
 ---
 
@@ -235,9 +235,9 @@ if (_idleTimeout.HasValue)
 
 ---
 
-## 9. 수정 이력 — A1·A2·A3 (2026-06-09)
+## 9. 수정 이력 — A1~A3 · B1~B4 (2026-06-09)
 
-A 등급(원격 크래시) 3건을 수정했다. B 등급(자원 고갈)은 미착수.
+A 등급(원격 크래시) 3건과 B 등급(자원 고갈) 4건을 수정했다(B2 속도 제한 제외 — 네트워크 계층 위임).
 
 | ID | 수정 내용 | 변경 파일 |
 |----|-----------|-----------|
@@ -247,6 +247,18 @@ A 등급(원격 크래시) 3건을 수정했다. B 등급(자원 고갈)은 미�
 
 **A3 정책:** 디코드 실패(프로토콜 위반)·핸들러 예외는 해당 세션을 **정상 종료(disconnect)** 한다. 패킷을 건너뛰고 계속하지 않는 이유 — 보안 관점에서 악성 클라이언트가 계속 시도하도록 두지 않기 위함. 정상/유휴 종료와 구분되도록 `OnClientError`로 통지한다.
 
-**검증(2026-06-09):** `dotnet build` 통과(ServerLib·Server, 경고 0). 일회성 end-to-end 스크립트로 동작 실측 — A2 절단 버퍼 `EndOfStreamException`, A1 id≥256 무throw·`Register` 범위초과 throw, A3 핸들러 예외 패킷 시 `OnClientError` 발화 + `ActiveSessionCount→0` + **서버 생존(후속 정상 패킷 처리)** 8/8 PASS. 스크립트는 실행 후 제거.
+| ID | 수정 내용 | 변경 파일 |
+|----|-----------|-----------|
+| B1 | 리스너에 `MaxConnections`(null=무제한) 추가. accept 직후 `_activeSessions.Count >= max`면 소켓을 닫고 세션 미생성. `_activeSessions`는 레지스트리 토글과 무관하게 항상 채워져 게이트가 토글 독립적. | `SocketPipelineListener.cs`, `IServerListener.cs`, `ServerConfig.cs`, `appsettings.json`, `Server/Program.cs` |
+| B2 | `MaxConnectionsPerIp`(null=무제한) 추가. `ConcurrentDictionary<IPAddress,int>`로 IP당 동시 연결 수를 원자 증감(`AddOrUpdate`/`TryUpdate`/`TryRemove(KVP)`), 0 도달 시 엔트리 제거(IP 순회 공격 방어). 증가는 accept 1회, 감소는 `OnDisconnected` 1회로 짝 — 세션 생성 실패 시 leak 윈도는 try/catch 롤백으로 차단. **초당 속도 제한은 미포함(네트워크 계층 위임).** | 〃 |
+| B3 | `ISession.LastProgressAt`(마지막 **완전한 패킷** 시각) 신설. 유휴 스윕을 `LastReceivedAt`(바이트) → `LastProgressAt`(진척) 기준으로 전환 → 1바이트 trickle로 byte-idle을 회피하던 slowloris 정리. PING도 진척으로 집계. **단 `IdleTimeout` 미설정 시 방어 없음(스윕 미시작)** — 문서 경고 유지. | `SocketPipelineSession.cs`, `SocketPipelineListener.cs`, `ISession.cs`, `IServerListener.cs` |
+| B4 | accept 루프에서 B1·B2 저비용 검사를 **세션·Pipe 할당 이전**에 수행하도록 순서화 → 거부 연결은 자원 미할당. (인증 전 half-open 상태 분리는 향후 과제) | `SocketPipelineListener.cs` |
 
-> **남은 권고:** A2의 `EndOfStreamException`은 BCL 타입이라 의미는 명확하나, 향후 도메인 예외(`InvalidPacketException` 등)로 승격하면 디스패치 계층이 "악성 패킷"과 "핸들러 버그"를 더 정밀히 구분할 수 있다. 현재는 A3 catch가 둘 다 동일 격리한다.
+관측성: 상한 초과 거부는 `IServerListener.TotalRejectedConnections`(Interlocked 카운터)로 누적 관측 — 폭주 시 연결당 콜백 비용 없이 드롭 규모 파악.
+
+**검증(2026-06-09):** `dotnet build` 통과(ServerLib·Server·AppConfig, 경고 0). 일회성 end-to-end 스크립트 실측 — **A 그룹 8/8 PASS**(A2 절단→`EndOfStreamException`, A1 id≥256 무throw·`Register` throw, A3 핸들러 예외 시 `OnClientError`+`ActiveSessionCount→0`+서버 생존). **B 그룹 6/6 PASS**(B1 상한2 적용+거부 카운터, B2 상한2+**reopen-after-close 성공**=감소 정확성, B3 **trickle 정리됨**+완전 패킷 대조군 생존). 스크립트는 실행 후 제거.
+
+> **남은 권고:**
+> - A2의 `EndOfStreamException`은 BCL 타입이라 의미는 명확하나, 향후 도메인 예외(`InvalidPacketException` 등)로 승격하면 디스패치 계층이 "악성 패킷"과 "핸들러 버그"를 더 정밀히 구분할 수 있다. 현재는 A3 catch가 둘 다 동일 격리한다.
+> - B2 **초당 연결/패킷 속도 제한**과 B4 **인증 전 half-open 상태**는 미구현. 속도 기반 방어는 LB·방화벽·WAF 등 네트워크 계층에서 보완 권장.
+> - B3 방어는 `IdleTimeout` 설정이 전제다. 라이브러리 기본값은 여전히 `null`(미설정 시 스윕 미시작) — 프로덕션은 반드시 설정.

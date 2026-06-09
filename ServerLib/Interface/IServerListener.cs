@@ -94,9 +94,10 @@ public interface IServerListener
     /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
     /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
     /// <item><description><b>보안 주의:</b> <see langword="null"/>(기본값) 상태로 프로덕션 배포 시 유휴 세션이 무제한 잔류하여
-    /// 리소스 고갈 위험이 있습니다. 프로덕션에서는 반드시 설정하십시오.
-    /// 또한 소켓 레이어 수신 기반이므로 최소 데이터(1바이트) 전송으로 타임아웃 회피가 가능합니다.
-    /// 절대 수명 제한이 필요한 경우 <see cref="ISession.ConnectedAt"/>을 별도로 감시하십시오.</description></item>
+    /// 리소스 고갈 위험이 있습니다. 프로덕션에서는 반드시 설정하십시오. (이 값을 설정해야만 slowloris 방어가 동작합니다.)</description></item>
+    /// <item><description><b>판정 기준(B3):</b> 유휴 판정은 <see cref="ISession.LastProgressAt"/>(마지막 <b>완전한 패킷</b> 수신 시각)을 사용합니다.
+    /// 바이트 단위 수신(<see cref="ISession.LastReceivedAt"/>)이 아니므로, 1바이트씩 흘려 타임아웃을 회피하는 trickle/slowloris 공격에도 견고합니다.
+    /// 단, 단일 대용량 패킷을 이 기간보다 느리게 전송하는 정상 클라이언트도 정리될 수 있습니다(소형 패킷 위주 서버에서는 무영향).</description></item>
     /// </list>
     /// </remarks>
     TimeSpan? IdleTimeout { get; set; }
@@ -127,6 +128,42 @@ public interface IServerListener
     /// <br/><br/>
     /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서 호출해야 합니다.
     /// </remarks>
+    /// <summary>
+    /// 동시에 수용할 세션 수의 상한입니다(B1). <see langword="null"/>(기본값)이면 무제한입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 연결 폭주로 세션 객체·수신 버퍼가 무제한 적재되어 메모리가 고갈되는 것을 막습니다.
+    /// 상한 도달 시 신규 연결은 accept 직후 즉시 닫히며(세션 미생성), <see cref="TotalRejectedConnections"/>가 증가합니다.
+    /// <br/><br/>
+    /// <b>[보안 주의:]</b> <see langword="null"/>로 두면 단일 클라이언트가 수만 연결로 서버를 고갈시킬 수 있습니다. 프로덕션에서는 반드시 설정하십시오.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능합니다.
+    /// </remarks>
+    int? MaxConnections { get; set; }
+
+    /// <summary>
+    /// 단일 원격 IP가 동시에 유지할 수 있는 연결 수의 상한입니다(B2). <see langword="null"/>(기본값)이면 무제한입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 한 출발지 IP가 연결 슬롯을 독점(<see cref="MaxConnections"/> 소진)하는 것을 막습니다.
+    /// 상한 초과 시 해당 IP의 신규 연결만 거부되며 다른 IP는 영향받지 않습니다.
+    /// <br/><br/>
+    /// <b>[범위 한계:]</b> 동시 연결 수 제한이며, 초당 연결/패킷 <b>속도 제한(rate limiting)은 포함하지 않습니다</b>.
+    /// 속도 기반 방어가 필요하면 네트워크 계층(LB·방화벽·WAF)에서 보완하십시오.
+    /// <br/><br/>
+    /// <b>[설정 시점:]</b> <see cref="Start"/>() 호출 전에만 설정 가능합니다.
+    /// </remarks>
+    int? MaxConnectionsPerIp { get; set; }
+
+    /// <summary>
+    /// 상한(<see cref="MaxConnections"/>·<see cref="MaxConnectionsPerIp"/>) 초과로 거부된 누적 연결 수입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[관측성:]</b> 폭주 상황에서 콜백 호출 비용 없이 드롭 규모를 관측하기 위한 카운터입니다(연결당 콜백은 그 자체로 부하가 됨).
+    /// <b>[Thread Safety:]</b> Thread-safe(Interlocked).
+    /// </remarks>
+    long TotalRejectedConnections { get; }
+
     void Start(int port);
 
     /// <summary>

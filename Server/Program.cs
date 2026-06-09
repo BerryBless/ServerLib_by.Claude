@@ -22,6 +22,10 @@ var listener = new SocketPipelineListener(registry);
 // 송신 타임아웃: 수신을 멈춘(죽은) 피어가 송신 게이트를 영구 점유해 BroadcastAsync 전체를 정지시키는 것을 방지.
 // 시한 초과 시 해당 세션 송신만 SocketException(TimedOut)으로 끊기고 나머지 브로드캐스트는 계속 진행된다.
 listener.SessionSendTimeout = TimeSpan.FromSeconds(30);
+// 연결 폭주 방어: 동시 세션 상한(B1)과 IP당 동시 연결 상한(B2). 설정값 0은 무제한(null)으로 매핑.
+// 상한 초과 연결은 accept 직후 닫히며 listener.TotalRejectedConnections로 누적 관측 가능.
+listener.MaxConnections = cfg.MaxConnections > 0 ? cfg.MaxConnections : null;
+listener.MaxConnectionsPerIp = cfg.MaxConnectionsPerIp > 0 ? cfg.MaxConnectionsPerIp : null;
 
 var test = 0;
 // 권위 수신 카운트: EnableMetrics 토글과 무관하게 항상 증가 — 하네스의 데이터유실 검증 기준값.

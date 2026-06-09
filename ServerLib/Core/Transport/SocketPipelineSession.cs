@@ -22,6 +22,7 @@ public sealed class SocketPipelineSession : ISession
     private int _disposed;
     private bool _receiving; // StartReceiving 이후 true — 콜백 재설정 차단(콜백은 수신 시작 전에 배선되어야 함)
     private long _lastReceivedAtTicks;
+    private long _lastProgressAtTicks; // B3: 마지막 "완전한 패킷" 프레이밍 시각 — slowloris 회피 방지용 유휴 기준
     private int _state = SessionState.Connecting.Value;
     private object? _context;
     // SemaphoreSlim: 송신 경로 직렬화 — 자동 PONG 회신과 앱 SendAsync가 동일 소켓에 동시 기록하는 것을 막아 Thread-safe 계약을 보장한다.
@@ -36,6 +37,9 @@ public sealed class SocketPipelineSession : ISession
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
     // Interlocked.Read: IdleTimeout 스윕 등 다른 스레드가 읽으므로 acquire 배리어로 최신 타임스탬프 가시성 보장 (FillPipeAsync 쓰기와 경합)
     public DateTimeOffset LastReceivedAt => new DateTimeOffset(Interlocked.Read(ref _lastReceivedAtTicks), TimeSpan.Zero);
+
+    // Interlocked.Read: 스윕 스레드가 읽고 수신 스레드(ReadPipeAsync)가 쓰므로 원자적 가시성 보장.
+    public DateTimeOffset LastProgressAt => new DateTimeOffset(Interlocked.Read(ref _lastProgressAtTicks), TimeSpan.Zero);
 
     // Volatile.Read: IO 스레드 쓰기·앱 스레드 읽기 간 재정렬 방지로 최신 상태값 가시성 보장
     public SessionState State => new SessionState(Volatile.Read(ref _state));
@@ -106,6 +110,7 @@ public sealed class SocketPipelineSession : ISession
         _pipe = new Pipe(s_pipeOptions);
         var now = DateTimeOffset.UtcNow;
         _lastReceivedAtTicks = now.UtcTicks;
+        _lastProgressAtTicks = now.UtcTicks; // 진척 기준 초기값 = ConnectedAt (아직 패킷 없음 → 침묵 연결도 타임아웃 대상)
     }
 
     public bool TransitionTo(SessionState newState)
@@ -178,6 +183,9 @@ public sealed class SocketPipelineSession : ISession
 
                 while (TryReadPacket(ref buffer, out var packet, out var packetId))
                 {
+                    // B3: 완전한 패킷이 프레이밍될 때만 진척 시각을 갱신한다(PING 포함). 바이트만 흘리고 패킷을
+                    // 완성하지 않는 trickle 공격은 이 값을 갱신하지 못해 유휴 스윕에 정리된다(byte 기준 LastReceivedAt과 구분).
+                    Volatile.Write(ref _lastProgressAtTicks, DateTimeOffset.UtcNow.UtcTicks);
                     try
                     {
                         await DispatchPacketAsync(packet, packetId);
