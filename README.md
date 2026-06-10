@@ -1,8 +1,50 @@
+# ClaudeCodeStudy
+
+ProudNet급 **고성능 서버 라이브러리(.NET 10)**와, 그 코드 품질을 자동으로 지키는 **Claude Code 멀티에이전트 하네스 시스템**을 함께 담은 학습/실험 프로젝트입니다.
+
+- **라이브러리** — System.IO.Pipelines 기반 Zero-copy TCP 서버/클라이언트, 바이너리 패킷 직렬화, RPC 디스패치, 세션 레지스트리.
+- **설계 원칙** — Interface는 순수 추상화만, Core는 구현만. 의존성 방향은 **Core → Interface** (역방향 금지).
+- **하네스** — 코드 리뷰·동시성·GC·파이프라인·TDD·Git 자동화를 21개 전문 에이전트가 팀으로 감사/구현하는 자동화 파이프라인.
+
+## 목차
+
+1. [인터페이스 명세](#1-인터페이스-명세-interface-specifications)
+2. [하네스 & 플러그인](#2-하네스--플러그인)
+3. [에이전트 활용](#3-에이전트-활용-agent-orchestration)
+
+---
+
 ## 1. 인터페이스 명세 (Interface Specifications)
 
 ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스는 고성능 서버 라이브러리 설계 원칙(Zero-allocation hot path, `ValueTask` 반환, Thread-safety 명시)을 계약으로 강제합니다.
 
 > 네임스페이스: `ServerLib.Interface` (단, 직렬화 계약인 `IPacket`·`IPacketSerializer`은 `ServerLib.Core.Serialization` — Interface 레이어가 Core를 역참조하지 않도록 직렬화 서브시스템에 함께 둔다)
+
+### 프로젝트 레이어 구조
+
+```
+ClaudeCodeStudy.sln
+├── ServerLib/
+│   ├── Interface/        # 순수 추상화 — 아래 7개 인터페이스
+│   └── Core/             # 구현 (의존성: Core → Interface)
+│       ├── Transport/    # SocketPipelineListener / ~Client / ~Session
+│       ├── Serialization/# BinaryPacketSerializer, SpanReader/Writer, IPacket
+│       ├── Rpc/          # RpcDispatcher
+│       └── Memory/       # PacketPool (ArrayPool 래퍼)
+├── Server/               # SocketPipelineListener 사용 예제 (Program.cs)
+├── Client/               # SocketPipelineClient 사용 예제 (다중 스레드 부하)
+├── AppConfig/            # ServerConfig / ClientConfig (JSON 설정 모델)
+└── Rpc.Generator/        # [RpcService] → 디스패처 Source Generator
+```
+
+| 인터페이스 | 구현체 (`ServerLib.Core`) |
+|-----------|--------------------------|
+| `IServerListener` | `SocketPipelineListener` |
+| `ISession` | `SocketPipelineSession` |
+| `IClientConnection` | `SocketPipelineClient` |
+| `ISessionRegistry` / `ISessionRegistrar` | `SessionRegistry` (`ConcurrentDictionary` 기반) |
+| `IRpcHandler` | `RpcDispatcher` (배열 인덱싱 O(1) 라우팅) |
+| `IPacketSerializer` | `BinaryPacketSerializer` |
 
 ---
 
@@ -135,3 +177,106 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 |------|------------|----------|
 | **harness** | harness-marketplace | 전문 에이전트 정의 + 해당 에이전트용 스킬 생성 — 도메인 하네스 구축·점검·동기화를 위한 메타 도구 |
 | **superpowers** | claude-plugins-official | `brainstorming` · `test-driven-development` · `writing-plans` · `requesting-code-review` · `using-git-worktrees` 등 범용 개발 워크플로 스킬 모음 |
+
+---
+
+## 3. 에이전트 활용 (Agent Orchestration)
+
+각 하네스는 단일 에이전트가 아니라 **전문 에이전트 팀**이 협력해 동작합니다. 트리거 키워드 → **오케스트레이터 스킬**이 팀을 구성(`TeamCreate`)하고, 팀원 에이전트들이 각자의 **개별 스킬**로 작업한 뒤 단일 리포트로 통합됩니다.
+
+```
+하네스 트리거("코드 리뷰해줘")
+   └─▶ 오케스트레이터 스킬 (code-review-orchestrator)
+          └─▶ 에이전트 팀 (architecture / security / performance / style-reviewer)
+                 └─▶ 개별 스킬 (architecture-review, security-review, …) → 통합 리포트
+```
+
+- 에이전트 정의: `.claude/agents/*.md` — **총 21개**
+- 스킬 정의: `.claude/skills/*/SKILL.md` — 오케스트레이터 5개 + 개별 스킬 12개 + `harness` 메타스킬
+
+### 3.1 에이전트 카탈로그 (21개)
+
+| 팀 | 에이전트 | 역할 | 주요 산출물 |
+|----|---------|------|-----------|
+| **Git 자동화** | `git-security-auditor` | diff 전체에서 민감 정보(API 키·`.env`·비밀번호) 탐지 → 차단 게이트 | PASS/FAIL 판정 |
+| | `git-commit-writer` | git log 스타일 학습 → WHY 중심 한국어 커밋 메시지 생성 | 커밋 메시지 |
+| | `git-push-controller` | 커밋 실행 → pre-commit hook 처리 → push (원격 없으면 로컬만) | push 결과 |
+| **종합 코드 리뷰** | `architecture-reviewer` | SOLID·레이어 경계·결합도·의존성 방향 감사 | `02_architecture_findings.json` |
+| | `security-reviewer` | OWASP Top 10·CWE 기반 인젝션·인증·민감정보 노출 스캔 | `02_security_findings.json` |
+| | `performance-reviewer` | N+1·동기 I/O 블로킹·힙 할당·LINQ 비효율·캐싱 누락 | `02_performance_findings.json` |
+| | `style-reviewer` | 네이밍·복잡도·중복·문서화·테스트 커버리지 갭 | `02_style_findings.json` |
+| **GC 가드** | `heap-allocation-scanner` | hot path 힙 할당(boxing·루프 내 new·LINQ·클로저) 탐지 | `02_allocation_findings.json` |
+| | `pooling-enforcer` | `ValueTask`·`ReadOnlySpan<T>`·`ArrayPool<T>` 적용 강제 | `02_pooling_findings.json` |
+| | `allocation-peer-reviewer` | 위 두 보고서 교차 검증(FP 기각·FN 보완·fix 검증) | `03_peer_review.json` |
+| **동시성 가드** | `lock-free-enforcer` | 전통적 락 탐지 → Lock-Free(Interlocked·Channel) 대체 판정 | `02_lockfree_findings.json` |
+| | `lock-justification-auditor` | 모든 락에 `[LOCK-REQUIRED]` 정당화 주석 존재·품질 감사 | `02_lockjustification_findings.json` |
+| | `deadlock-analyzer` | async 데드락 정적 분석(`.Result`·lock+await·세마포어 누수) | `03_deadlock_analysis.json` |
+| | `deadlock-reviewer` | 위 분석 독립 검증(FP 제거·FN 추가·최대 1회 재분석) | `03_deadlock_review.json` |
+| **파이프라인 아키텍처** | `pipeline-supervisor` | 워커 할당·인터페이스 협상·품질 게이트·통합 (감독자) | `04_pipeline_architecture.md` |
+| | `io-loop-designer` | System.IO.Pipelines 기반 IO 루프(백프레셔·AdvanceTo) 설계 | `02_io_loop/IoLoop.cs` |
+| | `thread-dispatcher-designer` | `Channel<T>` 기반 락-프리 스레드 디스패처 설계 | `02_dispatcher/ThreadDispatcher.cs` |
+| | `load-test-auditor` | 부하 관점 감사(버퍼 누수·Zero-copy 위반·백프레셔 오작동) | `03_load_test_audit.md` |
+| **TDD** | `tdd-analyst` | Red: 요구사항 → 실패하는 xUnit 테스트 + 스텁 설계 | `Tests/*.cs`, `Src/*.cs` 스텁 |
+| | `tdd-builder` | Green: 테스트 통과 최소 구현 (Gold Plating 금지) | `Src/*.cs` 구현 |
+| | `tdd-qa` | Refactor: `dotnet test` 실행 → 검증 게이트 → 리팩토링 가이드 | `test_results.txt`, `refactor_guide.md` |
+
+### 3.2 오케스트레이션 패턴 4종
+
+에이전트 팀을 묶는 방식은 작업 성격에 따라 네 가지로 나뉩니다.
+
+**① 병렬 팬아웃 (Parallel Fan-out)** — 독립 도메인을 동시에 감사하고 통합.
+- 사용: **종합 코드 리뷰**(4명 동시), **GC 가드 / 동시성 가드**의 감사 단계(2명 동시).
+- 에이전트 간 동일 위치 발견은 `SendMessage`로 조율해 중복 제거.
+- 통합 시 가중치 적용 (예: 코드 리뷰 종합 점수 = security 35% · architecture 25% · performance 25% · style 15%).
+
+```
+오케스트레이터 ─┬─▶ architecture-reviewer ─┐
+               ├─▶ security-reviewer ──────┤
+               ├─▶ performance-reviewer ───┼─▶ 통합 리포트
+               └─▶ style-reviewer ─────────┘
+```
+
+**② 순차 파이프라인 (Pipeline)** — 단계별 게이트, 앞 단계 실패 시 중단.
+- 사용: **Git 자동화**(`commitandpush`).
+- 보안 감사 FAIL 시 즉시 중단 → 커밋·푸시 단계로 진행하지 않음.
+
+```
+git-security-auditor ─(PASS)─▶ git-commit-writer ─▶ git-push-controller
+        └─(FAIL)─▶ 파이프라인 중단
+```
+
+**③ 생성-검증 (Producer–Reviewer)** — 생성자 산출물을 독립 리뷰어가 교차 검증.
+- 사용: **GC 가드**(scanner/enforcer → `allocation-peer-reviewer`), **동시성 가드**(`deadlock-analyzer` → `deadlock-reviewer`, 최대 1회 재분석), **TDD**(`tdd-builder` → `tdd-qa` Review Gate, 재작업 최대 2회).
+- 리뷰어는 False Positive 기각·False Negative 보완·수정 코드 안전성을 독립적으로 판정. `tdd-qa`는 코드 리뷰만으로 PASS 금지 — 반드시 `dotnet test` 실행.
+
+```
+deadlock-analyzer ─▶ deadlock-reviewer ─(FP 기각 / FN 추가 / 재분석 요청)─▶ 확정 리포트
+```
+
+**④ 감독자 (Supervisor)** — 중앙 감독자가 워커를 할당·모니터링·동적 재할당.
+- 사용: **파이프라인 아키텍처**(`pipeline-supervisor`).
+- 감독자가 워커 간 인터페이스(IO 루프 출력 ↔ 디스패처 입력)를 먼저 협상시키고, 각 워커 완료 시 품질 게이트로 검증, 미달 시 재작업 지시(한도 초과 시 직접 보완), 마지막에 `load-test-auditor`에게 감사 위임.
+
+```
+pipeline-supervisor ─┬─ 인터페이스 협상
+                     ├─▶ io-loop-designer ──────┐ 품질 게이트
+                     ├─▶ thread-dispatcher-designer ┘ → load-test-auditor → 통합
+```
+
+### 3.3 Stop 훅 자동화
+
+세션 종료 시 변경사항을 자동 커밋하는 훅이 구성돼 있습니다.
+
+- `.claude/settings.json`의 **Stop 훅**이 `scripts/auto-commit.ps1`을 실행.
+- 코드 변경을 끝낸 에이전트는 WHY 중심 한국어 커밋 메시지를 **`.git/auto_commit_msg.txt`** (UTF-8)에 작성.
+- 훅이 이 파일을 읽어 커밋 후 즉시 삭제. 파일이 없으면 접두사 기반 폴백 메시지로 커밋(안전망).
+- 파일 기반 전달을 쓰는 이유: nested `claude -p`의 stdin/콜드스타트 취약성으로 폴백이 빈발했기 때문(2026-06-03 재설계).
+
+### 3.4 에이전트 · 스킬 · 하네스 관계
+
+| 계층 | 위치 | 역할 |
+|------|------|------|
+| 하네스 | `CLAUDE.md` 하네스 섹션 | 트리거 키워드·목표·변경 이력 정의 |
+| 오케스트레이터 스킬 | `.claude/skills/*-orchestrator/SKILL.md` | 팀 구성·페이즈 조율·리포트 통합 |
+| 에이전트 | `.claude/agents/*.md` | 단일 도메인 전문 작업 수행 |
+| 개별 스킬 | `.claude/skills/*/SKILL.md` | 각 에이전트의 구체적 작업 절차 |
