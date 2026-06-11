@@ -8,7 +8,7 @@
 
     <!-- NuGet 패키지 식별 메타데이터: 다른 프로젝트가 소스 없이 PackageReference로 소비 -->
     <PackageId>ServerLib</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Authors>Vizufon</Authors>
     <Description>고성능 .NET 10 비동기 소켓 서버 라이브러리 (System.IO.Pipelines 기반 Zero-copy 송수신, 세션·하트비트·DDoS 가드 포함)</Description>
     <PackageTags>networking;sockets;pipelines;high-performance;server</PackageTags>

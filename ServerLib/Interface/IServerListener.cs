@@ -154,6 +154,40 @@ public interface IServerListener
     long TotalRejectedConnections { get; }
 
     /// <summary>
+    /// 새로 수락되는 각 세션에 적용할 송신 타임아웃입니다. <see langword="null"/>(기본값)이면 송신을 무한 대기합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 수신을 멈춘(죽은) 피어가 송신 게이트를 영구 점유하여
+    /// <see cref="ISessionRegistry.BroadcastAsync"/> 전체가 정지하는 것을 방지합니다.
+    /// 시한 초과 시 해당 세션 송신만 <see cref="System.Net.Sockets.SocketException"/>(<see cref="System.Net.Sockets.SocketError.TimedOut"/>)으로 끊기고, 나머지 브로드캐스트는 계속됩니다.
+    /// <br/><br/>
+    /// <b>[적용 범위:]</b> 이미 수락된 세션에는 소급 적용되지 않으며, 설정 이후 수락되는 세션부터 반영됩니다.
+    /// <br/><br/>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="Start"/>() 호출 전에 설정하는 것을 권장합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// </list>
+    /// </remarks>
+    TimeSpan? SessionSendTimeout { get; set; }
+
+    /// <summary>
+    /// 현재 활성(수신 루프 구동 중) 세션의 수입니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[관측성:]</b> 연결 폭주(FIN+RST) 이후 이 값이 0으로 복귀하는지로 세션 정리 경로의 완결(누수 부재)을 검증할 수 있습니다.
+    /// <br/><br/>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Thread-safe. 내부 동시성 컬렉션의 스냅샷 카운트를 반환합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> Zero-allocation.</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking. 즉시 반환합니다.</description></item>
+    /// </list>
+    /// </remarks>
+    int ActiveSessionCount { get; }
+
+    /// <summary>
     /// 지정된 포트에서 클라이언트 연결 수락을 시작합니다.
     /// </summary>
     /// <param name="port">리슨할 TCP 포트 번호 (1–65535).</param>

@@ -38,6 +38,22 @@ public interface IClientConnection : IAsyncDisposable
     TimeSpan? PingInterval { get; set; }
 
     /// <summary>
+    /// 단일 송신(<see cref="SendAsync"/>) 작업의 타임아웃입니다. <see langword="null"/>(기본값)이면 송신을 무한 대기합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[목적:]</b> 응답 불능 서버로의 송신이 소켓 버퍼 포화 상태에서 영구 블로킹되는 것을 방지합니다.
+    /// 시한 초과 시 해당 송신은 <see cref="System.Net.Sockets.SocketException"/>(<see cref="System.Net.Sockets.SocketError.TimedOut"/>)으로 실패합니다.
+    /// <br/><br/>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description><b>Thread Safety:</b> Not thread-safe. <see cref="ConnectAsync"/> 호출 전에 설정하는 것을 권장합니다.</description></item>
+    /// <item><description><b>Memory Allocation:</b> 활성화 시 송신 경로에서 취소 타이머 관리를 위한 내부 구조를 재사용합니다(송신당 무할당 지향).</description></item>
+    /// <item><description><b>Blocking:</b> Non-blocking.</description></item>
+    /// </list>
+    /// </remarks>
+    TimeSpan? SendTimeout { get; set; }
+
+    /// <summary>
     /// 마지막으로 측정된 왕복 지연(RTT)입니다. 측정 전에는 <see cref="TimeSpan.Zero"/>입니다.
     /// </summary>
     /// <remarks>

@@ -7,7 +7,8 @@ using ServerLib.Interface;
 
 namespace ServerLib.Core.Transport;
 
-public sealed class SocketPipelineSession : ISession
+// 구현 은닉(internal): 외부 소비자는 콜백으로 전달되는 ISession으로만 사용한다.
+internal sealed class SocketPipelineSession : ISession
 {
     private static readonly int MinBufferSize = 4096;
 

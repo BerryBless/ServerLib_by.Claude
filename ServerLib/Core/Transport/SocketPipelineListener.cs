@@ -5,7 +5,8 @@ using ServerLib.Interface;
 
 namespace ServerLib.Core.Transport;
 
-public sealed class SocketPipelineListener : IServerListener
+// 구현 은닉(internal): 외부 소비자는 ServerNet.CreateListener()가 반환하는 IServerListener로만 사용한다.
+internal sealed class SocketPipelineListener : IServerListener
 {
     private Socket? _listenSocket;
     private CancellationTokenSource? _cts;

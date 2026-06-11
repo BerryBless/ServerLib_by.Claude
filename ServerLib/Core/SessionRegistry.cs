@@ -14,7 +14,8 @@ namespace ServerLib.Core;
 /// <item><description><b>Blocking:</b> <see cref="BroadcastAsync"/>는 모든 병렬 전송 완료까지 비동기 대기합니다. 나머지 멤버는 즉시 반환합니다.</description></item>
 /// </list>
 /// </remarks>
-public sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
+// 구현 은닉(internal): 외부 소비자는 ServerNet.CreateSessionRegistry()가 반환하는 ISessionRegistry로만 사용한다.
+internal sealed class SessionRegistry : ISessionRegistry, ISessionRegistrar
 {
     // ConcurrentDictionary: 내부 버킷을 다중 락 스트라이프로 분할 → Register/Unregister(쓰기)와 조회(읽기)가 락 경합 없이 병행.
     // TryGet/Count는 락-프리 읽기 경로라 hot path에서도 저비용.

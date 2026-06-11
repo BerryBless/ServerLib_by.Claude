@@ -9,6 +9,7 @@ ProudNet급 **고성능 서버 라이브러리(.NET 10)**와, 그 코드 품질�
 ## 목차
 
 1. [인터페이스 명세](#1-인터페이스-명세-interface-specifications)
+   - [라이브러리 사용법 — 다른 프로젝트에서 (NuGet)](#라이브러리-사용법--다른-프로젝트에서-nuget)
 2. [하네스 & 플러그인](#2-하네스--플러그인)
 3. [에이전트 활용](#3-에이전트-활용-agent-orchestration)
 
@@ -26,13 +27,14 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 ClaudeCodeStudy.sln
 ├── ServerLib/
 │   ├── Interface/        # 순수 추상화 — 아래 7개 인터페이스
+│   ├── ServerNet.cs      # 공개 팩토리 — CreateListener/CreateClient/CreateSessionRegistry
 │   └── Core/             # 구현 (의존성: Core → Interface)
-│       ├── Transport/    # SocketPipelineListener / ~Client / ~Session
-│       ├── Serialization/# BinaryPacketSerializer, SpanReader/Writer, IPacket
+│       ├── Transport/    # SocketPipelineListener / ~Client / ~Session  (internal)
+│       ├── Serialization/# BinaryPacketSerializer, SpanReader/Writer, IPacket  (public)
 │       ├── Rpc/          # RpcDispatcher
 │       └── Memory/       # PacketPool (ArrayPool 래퍼)
-├── Server/               # SocketPipelineListener 사용 예제 (Program.cs)
-├── Client/               # SocketPipelineClient 사용 예제 (다중 스레드 부하)
+├── Server/               # ServerNet.CreateListener() 사용 예제 (Program.cs)
+├── Client/               # ServerNet.CreateClient() 사용 예제 (다중 스레드 부하)
 ├── AppConfig/            # ServerConfig / ClientConfig (JSON 설정 모델)
 └── Rpc.Generator/        # [RpcService] → 디스패처 Source Generator
 ```
@@ -45,6 +47,66 @@ ClaudeCodeStudy.sln
 | `ISessionRegistry` / `ISessionRegistrar` | `SessionRegistry` (`ConcurrentDictionary` 기반) |
 | `IRpcHandler` | `RpcDispatcher` (배열 인덱싱 O(1) 라우팅) |
 | `IPacketSerializer` | `BinaryPacketSerializer` |
+
+> **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`로 은닉된다. 외부 소비자는 **`ServerNet` 팩토리**가 반환하는 인터페이스로만 이들을 사용한다(아래 [라이브러리 사용법](#라이브러리-사용법--다른-프로젝트에서-nuget) 참고). 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 그대로 `public`.
+
+---
+
+### 라이브러리 사용법 — 다른 프로젝트에서 (NuGet)
+
+ServerLib은 **구현체를 숨기고 인터페이스 + 팩토리만** 노출한다. 다른 프로젝트는 소스(`.cs`) 없이 NuGet 패키지(DLL + XML 주석)만 참조하며, `SocketPipeline*` 구현체는 `internal`이라 보이지 않는다.
+
+**1) 패키지 만들기 (배포 측)**
+```powershell
+pwsh ./pack.ps1            # → nupkgs/ServerLib.1.1.0.nupkg (DLL + XML 문서 주석 동봉)
+```
+
+**2) 패키지 참조 (소비 측)** — `nuget.config`에 로컬 폴더 피드를 등록하고:
+```xml
+<configuration>
+  <packageSources>
+    <add key="local-serverlib" value="C:\path\to\ClaudeCodeStudy\nupkgs" />
+  </packageSources>
+</configuration>
+```
+프로젝트 `.csproj`에 한 줄:
+```xml
+<PackageReference Include="ServerLib" Version="1.1.0" />
+```
+
+**3) 서버 — `IServerListener`**
+```csharp
+using ServerLib;             // ServerNet 팩토리
+using ServerLib.Interface;   // IServerListener / ISession / ISessionRegistry
+using ServerLib.Core.Memory; // PacketPool — 헤더 파싱 유틸(public)
+
+ISessionRegistry registry = ServerNet.CreateSessionRegistry();
+IServerListener listener  = ServerNet.CreateListener(registry);
+listener.MaxConnections     = 1000;                       // 연결 폭주 방어(B1)
+listener.SessionSendTimeout = TimeSpan.FromSeconds(30);   // 죽은 피어 송신 게이트 점유 방지
+listener.OnReceived = (session, data) =>
+{
+    // data는 콜백 반환 시 무효화 — 보관하려면 복사할 것
+    return ValueTask.CompletedTask;
+};
+listener.Start(7777);
+// 활성 세션 수: listener.ActiveSessionCount · 전체 스냅샷: registry.GetAll()
+```
+
+**4) 클라이언트 — `IClientConnection`**
+```csharp
+using ServerLib;
+using ServerLib.Interface;   // IClientConnection
+
+await using IClientConnection conn = ServerNet.CreateClient();
+conn.SendTimeout = TimeSpan.FromSeconds(5);               // 응답불능 서버 송신 무한 블록 방지
+conn.OnReceived  = data => ValueTask.CompletedTask;
+await conn.ConnectAsync("127.0.0.1", 7777);
+await conn.SendAsync(myBytes);
+```
+
+> **공개 표면 요약** — public: `ServerNet`(팩토리) · `ServerLib.Interface`의 전체 인터페이스 · 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`) · `ServerMetrics` · `SessionContextExtensions`. internal: `SocketPipelineListener`/`~Client`/`~Session` · `SessionRegistry`.
+> 동작하는 전체 예제는 `Server/Program.cs`·`Client/Program.cs`를 참고.
 
 ---
 
@@ -77,6 +139,8 @@ ClaudeCodeStudy.sln
 | `Func<ISession, ValueTask>? OnClientConnected { get; set; }` | 클라이언트 접속 시 콜백 | OnClientDisconnected보다 항상 먼저 발화 |
 | `Func<ISession, ValueTask>? OnClientDisconnected { get; set; }` | 세션 해제 시 콜백 | 세션당 정확히 1회; 반환 후 세션 해제 |
 | `Func<ISession, ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }` | 데이터 수신 시 콜백 | 다수 세션 병렬 호출 가능; 메모리 슬라이스는 반환 후 무효화 |
+| `TimeSpan? SessionSendTimeout { get; set; }` | 신규 세션 송신 타임아웃 (`null`=무한) | `Start()` 전 설정 권장; 이후 수락 세션부터 적용 |
+| `int ActiveSessionCount { get; }` | 현재 활성 세션 수 | Thread-safe; 폭주 후 0 복귀로 세션 누수 부재 검증 |
 | `void Start(int port)` | 지정 포트에서 연결 수락 시작 | Non-blocking; Not thread-safe |
 | `void Stop()` | accept 루프 중지 및 소켓 종료 | Non-blocking; Not thread-safe |
 
@@ -100,6 +164,7 @@ ClaudeCodeStudy.sln
 | `Func<ValueTask>? OnConnected { get; set; }` | 연결 수립 직후 콜백 | OnDisconnected보다 항상 먼저 발화; 연결 실패 시 미발화 |
 | `Func<ValueTask>? OnDisconnected { get; set; }` | 연결 종료 시 콜백 | 연결 수립 후 반드시 1회 발화 |
 | `Func<ReadOnlyMemory<byte>, ValueTask>? OnReceived { get; set; }` | 데이터 수신 시 콜백 | I/O 스레드 호출; 메모리는 반환 후 무효화 |
+| `TimeSpan? SendTimeout { get; set; }` | 단일 송신 타임아웃 (`null`=무한) | `ConnectAsync()` 전 설정 권장; 응답불능 서버 송신 무한 블록 방지 |
 | `Task ConnectAsync(string host, int port, CancellationToken)` | 비동기 TCP 연결 수립 | 성공 시 수신 루프 자동 시작; Non-blocking; Not thread-safe |
 | `ValueTask SendAsync(ReadOnlyMemory<byte>, CancellationToken)` | 서버에 데이터 비동기 전송 | Zero-allocation; Thread-safe; Non-blocking |
 | `void Disconnect()` | 연결 즉시 동기 종료 | Non-blocking; Thread-safe; 진행 중 I/O 강제 취소 |

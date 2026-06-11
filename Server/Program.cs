@@ -1,10 +1,10 @@
 using AppConfig;
 using Microsoft.Extensions.Configuration;
-using ServerLib.Core;
-using ServerLib.Core.Memory;
-using ServerLib.Core.Serialization.Packets;
-using ServerLib.Core.Transport;
-using ServerLib.Interface;
+using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 인터페이스로 리스너·레지스트리 생성
+using ServerLib.Core;                         // ServerMetrics, GetContext<T>() 확장(public 빌딩블록)
+using ServerLib.Core.Memory;                  // PacketPool: 헤더 파싱 유틸(public 빌딩블록)
+using ServerLib.Core.Serialization.Packets;   // IncrementPacket/DecrementPacket: 예제 패킷 타입(public)
+using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -16,9 +16,9 @@ var config = new ConfigurationBuilder()
 var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 
 // 토글: 레지스트리/메트릭은 비활성 시 생성 자체를 생략(null)
-var registry = cfg.Features.EnableSessionRegistry ? new SessionRegistry() : null;
+ISessionRegistry? registry = cfg.Features.EnableSessionRegistry ? ServerNet.CreateSessionRegistry() : null;
 var metrics = cfg.Features.EnableMetrics ? new ServerMetrics() : null;
-var listener = new SocketPipelineListener(registry);
+IServerListener listener = ServerNet.CreateListener(registry);
 // 송신 타임아웃: 수신을 멈춘(죽은) 피어가 송신 게이트를 영구 점유해 BroadcastAsync 전체를 정지시키는 것을 방지.
 // 시한 초과 시 해당 세션 송신만 SocketException(TimedOut)으로 끊기고 나머지 브로드캐스트는 계속 진행된다.
 listener.SessionSendTimeout = TimeSpan.FromSeconds(30);

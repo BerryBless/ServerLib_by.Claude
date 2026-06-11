@@ -7,7 +7,8 @@ using ServerLib.Interface;
 
 namespace ServerLib.Core.Transport;
 
-public sealed class SocketPipelineClient : IClientConnection
+// 구현 은닉(internal): 외부 소비자는 ServerNet.CreateClient()가 반환하는 IClientConnection으로만 사용한다.
+internal sealed class SocketPipelineClient : IClientConnection
 {
     private static readonly int MinBufferSize = 4096;
 

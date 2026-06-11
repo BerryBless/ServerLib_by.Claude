@@ -2,10 +2,11 @@ using System.Buffers;
 using System.Diagnostics; // Stopwatch.GetTimestamp: 측정 윈도의 경과 시간(처리량 산출용) — DateTime보다 저오버헤드 고해상도 타임스탬프
 using AppConfig;
 using Microsoft.Extensions.Configuration;
-using ServerLib.Core.Memory;
-using ServerLib.Core.Serialization;
-using ServerLib.Core.Serialization.Packets;
-using ServerLib.Core.Transport;
+using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 IClientConnection 생성
+using ServerLib.Core.Memory;                  // PacketPool: 헤더 크기·파싱 유틸(public 빌딩블록)
+using ServerLib.Core.Serialization;           // BinaryPacketSerializer / IPacketSerializer(public)
+using ServerLib.Core.Serialization.Packets;   // IncrementPacket/DecrementPacket: 예제 패킷 타입(public)
+using ServerLib.Interface;                     // IClientConnection
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -67,7 +68,7 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
     var ct = cts.Token;
     long total = 0;
 
-    await using var conn = new SocketPipelineClient();
+    await using IClientConnection conn = ServerNet.CreateClient();
     // SendTimeoutSeconds=0이면 비활성 → 송신당 CTS 미할당(A/B 측정 토글). >0이면 응답불능 서버 송신 무한 블록 방지.
     if (cfg.SendTimeoutSeconds > 0)
         conn.SendTimeout = TimeSpan.FromSeconds(cfg.SendTimeoutSeconds);
