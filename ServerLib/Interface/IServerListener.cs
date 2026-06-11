@@ -118,17 +118,6 @@ public interface IServerListener
     Func<ISession, ValueTask>? OnIdleTimeout { get; set; }
 
     /// <summary>
-    /// 지정된 포트에서 클라이언트 연결 수락을 시작합니다.
-    /// </summary>
-    /// <param name="port">리슨할 TCP 포트 번호 (1–65535).</param>
-    /// <exception cref="InvalidOperationException">이미 실행 중인 상태에서 호출 시 발생합니다.</exception>
-    /// <exception cref="System.Net.Sockets.SocketException">포트 바인딩 실패 시 발생합니다.</exception>
-    /// <remarks>
-    /// <b>[Blocking:]</b> Non-blocking. accept 루프는 내부 스레드 풀에서 구동되므로 즉시 반환됩니다.
-    /// <br/><br/>
-    /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서 호출해야 합니다.
-    /// </remarks>
-    /// <summary>
     /// 동시에 수용할 세션 수의 상한입니다(B1). <see langword="null"/>(기본값)이면 무제한입니다.
     /// </summary>
     /// <remarks>
@@ -164,6 +153,17 @@ public interface IServerListener
     /// </remarks>
     long TotalRejectedConnections { get; }
 
+    /// <summary>
+    /// 지정된 포트에서 클라이언트 연결 수락을 시작합니다.
+    /// </summary>
+    /// <param name="port">리슨할 TCP 포트 번호 (1–65535).</param>
+    /// <exception cref="InvalidOperationException">이미 실행 중인 상태에서 호출 시 발생합니다.</exception>
+    /// <exception cref="System.Net.Sockets.SocketException">포트 바인딩 실패 시 발생합니다.</exception>
+    /// <remarks>
+    /// <b>[Blocking:]</b> Non-blocking. accept 루프는 내부 스레드 풀에서 구동되므로 즉시 반환됩니다.
+    /// <br/><br/>
+    /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서 호출해야 합니다.
+    /// </remarks>
     void Start(int port);
 
     /// <summary>

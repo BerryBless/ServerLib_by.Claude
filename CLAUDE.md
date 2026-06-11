@@ -63,6 +63,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/output_0602_224508.txt` | 2026-06-02 | 4단계 아키텍처 구현 빌드 출력 로그 |
 | `plan/packet_serialization_0602.md` | 2026-06-02 | 패킷 직렬화 설계 (SpanWriter/SpanReader/BinaryPacketSerializer) |
 | `plan/security_audit_0609.md` | 2026-06-09 | 해킹·DDoS 공격 표면 보안 감사 (원격 크래시 A1~A3·자원 고갈 B1~B4, 감사 전용) |
+| `plan/nuget_distribution_0611.md` | 2026-06-11 | ServerLib NuGet 배포 설계 (소스 비공개, DLL+XML 동봉, 로컬 피드 소비) |
 
 ---
 

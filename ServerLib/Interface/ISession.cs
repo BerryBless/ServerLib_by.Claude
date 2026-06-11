@@ -149,7 +149,7 @@ public interface ISession : IAsyncDisposable
     /// 이 콜백이 반환된 후 세션 내부 리소스가 정리됩니다.
     /// <br/><br/>
     /// <b>[Guarantee:]</b> 세션 생명주기 동안 정확히 1회만 호출됩니다.
-    /// <see cref="DisposeAsync"/>가 먼저 호출된 경우에도 발화되지 않을 수 있습니다.
+    /// <see cref="System.IAsyncDisposable.DisposeAsync"/>가 먼저 호출된 경우에도 발화되지 않을 수 있습니다.
     /// <br/><br/>
     /// <b>[설정 시점:]</b> 세션 수신 시작 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>

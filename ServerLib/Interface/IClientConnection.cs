@@ -70,7 +70,7 @@ public interface IClientConnection : IAsyncDisposable
     /// <b>[Thread Context:]</b> 수신 루프를 구동하는 I/O 스레드 풀에서 호출됩니다.
     /// <br/><br/>
     /// <b>[Guarantee:]</b> 연결 수립 후 반드시 1회 호출됩니다.
-    /// <see cref="DisposeAsync"/>가 먼저 호출된 경우에도 발화될 수 있습니다.
+    /// <see cref="System.IAsyncDisposable.DisposeAsync"/>가 먼저 호출된 경우에도 발화될 수 있습니다.
     /// <br/><br/>
     /// <b>[설정 시점:]</b> <see cref="ConnectAsync"/>() 호출 전에만 설정 가능하며, 이후 설정 시 <see cref="InvalidOperationException"/>이 발생합니다.
     /// </remarks>
@@ -133,7 +133,7 @@ public interface IClientConnection : IAsyncDisposable
 
     /// <summary>
     /// 연결을 즉시 종료하고 수신 루프를 중단합니다.
-    /// <see cref="DisposeAsync"/>와 달리 동기로 동작하며, 진행 중인 I/O를 강제 취소합니다.
+    /// <see cref="System.IAsyncDisposable.DisposeAsync"/>와 달리 동기로 동작하며, 진행 중인 I/O를 강제 취소합니다.
     /// </summary>
     /// <remarks>
     /// <b>[Blocking:]</b> Non-blocking. 취소 신호를 전송하고 즉시 반환됩니다.

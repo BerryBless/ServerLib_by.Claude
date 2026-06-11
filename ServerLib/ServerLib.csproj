@@ -5,6 +5,18 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>ServerLib</RootNamespace>
+
+    <!-- NuGet 패키지 식별 메타데이터: 다른 프로젝트가 소스 없이 PackageReference로 소비 -->
+    <PackageId>ServerLib</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Vizufon</Authors>
+    <Description>고성능 .NET 10 비동기 소켓 서버 라이브러리 (System.IO.Pipelines 기반 Zero-copy 송수신, 세션·하트비트·DDoS 가드 포함)</Description>
+    <PackageTags>networking;sockets;pipelines;high-performance;server</PackageTags>
+
+    <!-- XML 문서 주석을 빌드 산출물(ServerLib.xml)로 생성 → dotnet pack이 자동 동봉하여 소비자 IntelliSense 제공 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 일부 public 멤버의 문서 누락 경고(CS1591) 억제: 빌드/pack 로그 노이즈 방지 -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="9.0.5" />
