@@ -133,7 +133,6 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
             {
                 await conn.SendAsync(dmgMem, ct);
             }
-            Console.WriteLine($"  [T{i}] damage={damage}  전송={total:N0}회");
         }
     }
     finally
