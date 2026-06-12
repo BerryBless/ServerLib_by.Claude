@@ -1,57 +1,84 @@
+using System.Buffers;
 using AppConfig;
 using Microsoft.Extensions.Configuration;
 using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 인터페이스로 리스너·레지스트리 생성
 using ServerLib.Core;                         // ServerMetrics, GetContext<T>() 확장(public 빌딩블록)
 using ServerLib.Core.Memory;                  // PacketPool: 헤더 파싱 유틸(public 빌딩블록)
-using ServerLib.Core.Serialization.Packets;   // IncrementPacket/DecrementPacket: 예제 패킷 타입(public)
+using ServerLib.Core.Serialization;           // BinaryPacketSerializer / PacketSendExtensions
+using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket
 using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-    // AddCommandLine: appsettings.json 위에 args 오버라이드 계층 → 하네스가 포트·주기를 인자로 제어.
-    // 예: Server.exe --Server:Port=9100 --Server:MonitorIntervalSeconds=1
+    // AddCommandLine: appsettings.json 위에 args 오버라이드 계층 → 하네스가 포트·주기를 인자로 제어
     .AddCommandLine(args)
     .Build();
 var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 
-// 토글: 레지스트리/메트릭은 비활성 시 생성 자체를 생략(null)
-ISessionRegistry? registry = cfg.Features.EnableSessionRegistry ? ServerNet.CreateSessionRegistry() : null;
+// ISessionRegistry: 브로드캐스트(BroadcastAsync)는 레지스트리 없이 불가 → 게임 컨텐츠에서 필수.
+// cfg.Features.EnableSessionRegistry 토글과 무관하게 항상 생성한다.
+ISessionRegistry registry = ServerNet.CreateSessionRegistry();
 var metrics = cfg.Features.EnableMetrics ? new ServerMetrics() : null;
 IServerListener listener = ServerNet.CreateListener(registry);
 // 송신 타임아웃: 수신을 멈춘(죽은) 피어가 송신 게이트를 영구 점유해 BroadcastAsync 전체를 정지시키는 것을 방지.
-// 시한 초과 시 해당 세션 송신만 SocketException(TimedOut)으로 끊기고 나머지 브로드캐스트는 계속 진행된다.
 listener.SessionSendTimeout = TimeSpan.FromSeconds(30);
-// 연결 폭주 방어: 동시 세션 상한(B1)과 IP당 동시 연결 상한(B2). 설정값 0은 무제한(null)으로 매핑.
-// 상한 초과 연결은 accept 직후 닫히며 listener.TotalRejectedConnections로 누적 관측 가능.
 listener.MaxConnections = cfg.MaxConnections > 0 ? cfg.MaxConnections : null;
 listener.MaxConnectionsPerIp = cfg.MaxConnectionsPerIp > 0 ? cfg.MaxConnectionsPerIp : null;
 
-var test = 0;
-// 권위 수신 카운트: EnableMetrics 토글과 무관하게 항상 증가 — 하네스의 데이터유실 검증 기준값.
+const long MobMaxHp = 100_000; // 보스 몹 기본 HP
+
+// BinaryPacketSerializer: 내부 상태 없음(Thread-safe) — OnReceived(다중 I/O 스레드)에서 공유 안전
+var serializer = new BinaryPacketSerializer();
+
+// 권위 수신 카운트: EnableMetrics 토글과 무관하게 항상 증가 — 하네스의 데이터유실 검증 기준값
 long totalReceived = 0;
 long windowPackets = 0;
 using var cts = new CancellationTokenSource();
 
-listener.OnClientConnected = session =>
+// 보스 몹: 사망 시 MobDeathPacket 브로드캐스트 후 자동 리스폰
+var mob = new MobManager(maxHp: MobMaxHp, onDeath: deathPkt =>
 {
-    session.Context = new GameContext(PlayerId: 1001, Nickname: "홍길동");
+    // 사망은 희소 이벤트(수십~수백 회/분) — Task.Run으로 I/O 스레드를 블로킹하지 않고 비동기 브로드캐스트
+    _ = Task.Run(async () =>
+    {
+        int sz = PacketPool.HeaderSize + deathPkt.GetBodySize();
+        // ArrayPool<byte>.Shared: 사망 패킷 브로드캐스트 버퍼 대여 — 희소 이벤트이나 new byte[] 할당을 피한다
+        var buf = ArrayPool<byte>.Shared.Rent(sz);
+        try
+        {
+            serializer.Serialize(deathPkt, buf);
+            await registry.BroadcastAsync(buf.AsMemory(0, sz));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buf);
+        }
+        Console.WriteLine($"[KILL] gen={deathPkt.Generation}  mvp={deathPkt.MvpName}  topDmg={deathPkt.TopDamage:N0}");
+    });
+});
+
+listener.OnClientConnected = async session =>
+{
+    // 닉네임: SessionId 앞 4자리로 고유 식별 — GameContext 부착 예제(세션별 커스텀 컨텍스트 패턴)
+    session.Context = new GameContext(PlayerId: session.GetHashCode(), Nickname: $"전사-{session.SessionId.ToString("N")[..4]}");
     metrics?.OnClientConnected();
-    Console.WriteLine($"[+] {session.RemoteEndPoint}  state={session.State}  (sessions: {metrics?.ConnectedCount ?? 0})");
-    return ValueTask.CompletedTask;
+    Console.WriteLine($"[+] {session.RemoteEndPoint}  (sessions: {metrics?.ConnectedCount ?? 0})");
+    // 접속 즉시 현재 HP 1회 전송 — 첫 200ms 브로드캐스트 전까지 클라이언트가 HP 모름 상태를 방지
+    var (hp, maxHp, gen) = mob.Snapshot();
+    await session.SendAsync(new MobHpPacket { Hp = hp, MaxHp = maxHp, Generation = gen });
 };
 
 listener.OnClientDisconnected = session =>
 {
     metrics?.OnClientDisconnected();
-    // E2: 부착해 둔 컨텍스트를 캐스팅 없이 타입 안전하게 되읽는다.
+    // E2: 부착해 둔 컨텍스트를 캐스팅 없이 타입 안전하게 되읽는다
     var nick = session.GetContext<GameContext>()?.Nickname ?? "?";
-    Console.WriteLine($"[-] {session.RemoteEndPoint}  nick={nick}  (sessions: {metrics?.ConnectedCount ?? 0})  test={Volatile.Read(ref test)}");
+    Console.WriteLine($"[-] {session.RemoteEndPoint}  nick={nick}  (sessions: {metrics?.ConnectedCount ?? 0})");
     return ValueTask.CompletedTask;
 };
 
-// OnClientError: 손상/악성 패킷 디코드 실패나 OnReceived 핸들러 예외로 세션이 강제 종료될 때 통지받는다.
-// 이 통지가 없으면 에러 종료가 정상 종료·유휴 타임아웃과 구분되지 않아 핸들러 버그가 조용히 묻힌다.
+// OnClientError: 손상/악성 패킷 디코드 실패나 OnReceived 핸들러 예외로 세션이 강제 종료될 때 통지
 listener.OnClientError = (session, ex) =>
 {
     Console.WriteLine($"[!] {session.RemoteEndPoint}  수신 오류 → 세션 종료: {ex.GetType().Name}: {ex.Message}");
@@ -67,15 +94,17 @@ listener.OnReceived = (session, data) =>
     Interlocked.Increment(ref totalReceived);
     Interlocked.Increment(ref windowPackets);
 
-    if (packetId == IncrementPacket.Id)
-        Interlocked.Increment(ref test);
-    else if (packetId == DecrementPacket.Id)
-        Interlocked.Decrement(ref test);
+    if (packetId == DamagePacket.Id)
+    {
+        // Deserialize<T>: 헤더 포함 전체 프레임(data.Span)을 받아 내부에서 헤더 4B를 슬라이스로 건너뜀
+        var pkt = serializer.Deserialize<DamagePacket>(data.Span);
+        var label = session.GetContext<GameContext>()?.Nickname ?? session.RemoteEndPoint?.ToString() ?? "?";
+        mob.ApplyDamage(session.SessionId, label, pkt.Amount);
+    }
 
     return ValueTask.CompletedTask;
 };
 
-// 토글: 유휴 타임아웃은 활성 시에만 설정(미설정 시 ServerLib가 스윕 루프를 시작하지 않음)
 if (cfg.Features.EnableIdleTimeout)
 {
     listener.IdleTimeout = TimeSpan.FromSeconds(cfg.IdleTimeoutSeconds);
@@ -87,10 +116,38 @@ if (cfg.Features.EnableIdleTimeout)
 }
 
 listener.Start(cfg.Port);
-Console.WriteLine($"[Server] port {cfg.Port} — 증가(Id={IncrementPacket.Id}) / 감소(Id={DecrementPacket.Id}).");
-Console.WriteLine($"  Features: registry={cfg.Features.EnableSessionRegistry} metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout}");
+Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
+Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
+// 주기 HP 브로드캐스트 Task: 200ms마다 전체 클라에 현재 HP 전송.
+// per-hit 브로드캐스트(N_clients × 총타격수 = 2차 증폭) 대신 주기 방식으로 브로드캐스트율을 초당 5회로 고정.
+_ = Task.Run(async () =>
+{
+    while (!cts.Token.IsCancellationRequested)
+    {
+        try { await Task.Delay(200, cts.Token); }
+        catch (OperationCanceledException) { break; }
+
+        var (hp, maxHp, gen) = mob.Snapshot();
+        var hpPkt = new MobHpPacket { Hp = hp, MaxHp = maxHp, Generation = gen };
+        int sz = PacketPool.HeaderSize + hpPkt.GetBodySize();
+        // ArrayPool<byte>.Shared: 고정 크기 버킷 풀에서 대여 — 200ms 주기 브로드캐스트에서 new byte[] 힙 할당 없이 재사용
+        var buf = ArrayPool<byte>.Shared.Rent(sz);
+        try
+        {
+            serializer.Serialize(hpPkt, buf);
+            await registry.BroadcastAsync(buf.AsMemory(0, sz), cts.Token);
+        }
+        catch (OperationCanceledException) { break; }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buf);
+        }
+    }
+});
+
+// 모니터 루프
 _ = Task.Run(async () =>
 {
     while (!cts.Token.IsCancellationRequested)
@@ -99,13 +156,16 @@ _ = Task.Run(async () =>
         catch (OperationCanceledException) { break; }
 
         long count = Interlocked.Exchange(ref windowPackets, 0);
-        Console.WriteLine($"[Monitor] sessions={metrics?.ConnectedCount ?? 0}  packets/{cfg.MonitorIntervalSeconds}s={count:N0}  test={Volatile.Read(ref test)}  registry={registry?.Count ?? 0}");
+        var (hp, _, gen) = mob.Snapshot();
+        Console.WriteLine($"[Monitor] sessions={metrics?.ConnectedCount ?? 0}  packets/{cfg.MonitorIntervalSeconds}s={count:N0}  hp={hp:N0}  gen={gen}  registry={registry.Count}");
         // [STATS]: 하네스가 머신 파싱하는 권위 신호(ASCII·고정 key=value). 토글 독립 소스만 사용.
+        // test= 토큰이 hp=/gen=으로 교체됨 — StabilityTest 코드 프로젝트 부재 확인, in-repo 하네스 비파괴.
         Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} " +
-                          $"test={Volatile.Read(ref test)} " +
-                          $"sessions={listener.ActiveSessionCount} " +     // 토글 독립
-                          $"heapBytes={GC.GetTotalMemory(false)} " +        // 서버측 관리 힙(누수 보조 신호)
-                          $"allocBytes={GC.GetTotalAllocatedBytes()} " +    // 누적 할당 바이트(수신·송신 경로 alloc률 보조 신호)
+                          $"hp={hp} " +
+                          $"gen={gen} " +
+                          $"sessions={listener.ActiveSessionCount} " +
+                          $"heapBytes={GC.GetTotalMemory(false)} " +
+                          $"allocBytes={GC.GetTotalAllocatedBytes()} " +
                           $"gen0={GC.CollectionCount(0)} " +
                           $"gen2={GC.CollectionCount(2)}");
     }
@@ -116,23 +176,20 @@ while (true)
     var line = Console.ReadLine();
     if (line?.Trim().Equals("q", StringComparison.OrdinalIgnoreCase) == true) break;
 
-    if (registry is null)
-    {
-        Console.WriteLine("[Sessions] 세션 레지스트리 비활성화됨 (EnableSessionRegistry=false)");
-        continue;
-    }
     var sessions = registry.GetAll();
     Console.WriteLine($"[Sessions] count={sessions.Count}");
     foreach (var s in sessions)
-        Console.WriteLine($"  {s.SessionId:N}  {s.RemoteEndPoint}  connected={s.ConnectedAt:HH:mm:ss}");
+        Console.WriteLine($"  {s.SessionId:N}  {s.RemoteEndPoint}  connected={s.ConnectedAt:HH:mm:ss}  nick={s.GetContext<GameContext>()?.Nickname ?? "?"}");
 }
 
 cts.Cancel();
 listener.Stop();
-Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final test={test}");
-Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} test={test} " +
+
+var (finalHp, _, finalGen) = mob.Snapshot();
+Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final hp={finalHp}  gen={finalGen}");
+Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} hp={finalHp} gen={finalGen} " +
                   $"sessions={listener.ActiveSessionCount} heapBytes={GC.GetTotalMemory(false)} " +
                   $"allocBytes={GC.GetTotalAllocatedBytes()} gen0={GC.CollectionCount(0)} gen2={GC.CollectionCount(2)}");
 
-// 세션에 부착할 커스텀 컨텍스트 예제
+// 세션에 부착할 커스텀 컨텍스트 — GameContext(PlayerId, Nickname) 예제
 record GameContext(int PlayerId = 0, string Nickname = "Guest");

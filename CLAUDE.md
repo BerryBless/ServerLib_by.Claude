@@ -7,8 +7,8 @@
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
-- `Server/Program.cs` — `ServerNet.CreateListener()`(→`IServerListener`) 사용 예제: `int test` 변수, 증가(Id=3)/감소(Id=4) 패킷 처리, Interlocked 카운터
-- `Client/Program.cs` — `ServerNet.CreateClient()`(→`IClientConnection`) 사용 예제: 4개 스레드(0·1→증가×1000, 2·3→감소×1000) 동시 전송
+- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`, 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력
+- `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
@@ -67,6 +67,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/security_audit_0609.md` | 2026-06-09 | 해킹·DDoS 공격 표면 보안 감사 (원격 크래시 A1~A3·자원 고갈 B1~B4, 감사 전용) |
 | `plan/nuget_distribution_0611.md` | 2026-06-11 | ServerLib NuGet 배포 설계 (소스 비공개, DLL+XML 동봉, 로컬 피드 소비) |
 | `plan/interface_encapsulation_0611.md` | 2026-06-11 | 인터페이스 전용 노출 (Transport 구현체 internal화 + ServerNet 팩토리, v1.1.0) |
+| `plan/mob_combat_0612.md` | 2026-06-12 | 보스 몹 전투 컨텐츠 (DamagePacket·MobHpPacket·MobDeathPacket, MobManager lock-free 설계) |
 
 ---
 

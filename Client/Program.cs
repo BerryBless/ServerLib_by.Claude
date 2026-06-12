@@ -5,7 +5,7 @@ using Microsoft.Extensions.Configuration;
 using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 IClientConnection 생성
 using ServerLib.Core.Memory;                  // PacketPool: 헤더 크기·파싱 유틸(public 빌딩블록)
 using ServerLib.Core.Serialization;           // BinaryPacketSerializer / IPacketSerializer(public)
-using ServerLib.Core.Serialization.Packets;   // IncrementPacket/DecrementPacket: 예제 패킷 타입(public)
+using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket
 using ServerLib.Interface;                     // IClientConnection
 
 var config = new ConfigurationBuilder()
@@ -39,83 +39,114 @@ Console.CancelKeyPress += (_, e) =>
     Console.WriteLine("\n[Ctrl+C] 종료 신호 수신 — 스레드 정리 중...");
 };
 
-// 참고(E1): 단발성 송신은 conn.SendAsync(packet) 편의 오버로드(PacketSendExtensions)로 직렬화·버퍼 관리를 캡슐화할 수 있다.
-// 단, 아래 hot loop는 패킷을 1회만 직렬화해 buffer를 재사용하는 무할당 패턴이 더 유리하므로 그대로 둔다.
+// BinaryPacketSerializer: 내부 상태 없음(Thread-safe) — 모든 공격 스레드에서 공유 가능
 var serializer = new BinaryPacketSerializer();
 
-var incPacket = new IncrementPacket();
-var decPacket = new DecrementPacket();
-var incBuf = ArrayPool<byte>.Shared.Rent(PacketPool.HeaderSize);
-var decBuf = ArrayPool<byte>.Shared.Rent(PacketPool.HeaderSize);
-serializer.Serialize(incPacket, incBuf);
-serializer.Serialize(decPacket, decBuf);
-var incMem = incBuf.AsMemory(0, PacketPool.HeaderSize);
-var decMem = decBuf.AsMemory(0, PacketPool.HeaderSize);
-
-int incThreads = threadCount / 2;
-int decThreads = threadCount - incThreads;
 string modeDesc = sendCount is null
     ? "무한 루프 (Ctrl+C로 종료)"
     : $"스레드당 {sendCount:N0}회 전송 후 종료";
 Console.WriteLine($"{threadCount}개 스레드 시작 — {modeDesc}");
-Console.WriteLine($"  증가 스레드: {incThreads}개, 감소 스레드: {decThreads}개  (배치={BatchSize})");
+Console.WriteLine($"  스레드별 공격력: 10~30 사이클 (T0=10, T1=15, T2=20, T3=25, T4=30, T5=10...)");
 
 var tasks = Enumerable.Range(0, threadCount).Select(async i =>
 {
-    bool isIncrement = i < incThreads;
-    var label = isIncrement ? "증가" : "감소";
-    var sendMem = isIncrement ? incMem : decMem;
+    // 스레드마다 고정 공격력 부여: 딜이 달라야 MVP 집계가 의미를 가짐
+    int damage = 10 + (i % 5) * 5; // T0=10, T1=15, T2=20, T3=25, T4=30
+    var dmgPkt = new DamagePacket { Amount = damage };
+    int pktSize = PacketPool.HeaderSize + dmgPkt.GetBodySize(); // 4(헤더) + 4(int Amount) = 8B
+
+    // ArrayPool<byte>.Shared: TLS 슬롯 우선 확인 후 공유 버킷 대여 — hot loop에서 new byte[] 없이 O(1) 반환
+    var dmgBuf = ArrayPool<byte>.Shared.Rent(pktSize);
+
+    // 패킷을 1회만 직렬화해 버퍼 재사용 — 동일 공격력 패킷을 루프마다 다시 직렬화하지 않아 CPU·Alloc 절감
+    serializer.Serialize(dmgPkt, dmgBuf);
+    var dmgMem = dmgBuf.AsMemory(0, pktSize);
     var ct = cts.Token;
     long total = 0;
 
-    await using IClientConnection conn = ServerNet.CreateClient();
-    // SendTimeoutSeconds=0이면 비활성 → 송신당 CTS 미할당(A/B 측정 토글). >0이면 응답불능 서버 송신 무한 블록 방지.
-    if (cfg.SendTimeoutSeconds > 0)
-        conn.SendTimeout = TimeSpan.FromSeconds(cfg.SendTimeoutSeconds);
-    if (cfg.Features.EnableHeartbeat)
-        conn.PingInterval = TimeSpan.FromSeconds(cfg.PingIntervalSeconds); // 자동 PING → RTT 측정
-    conn.OnConnected = () =>
+    try
     {
-        Console.WriteLine($"  [T{i}] connected");
-        return ValueTask.CompletedTask;
-    };
-    conn.OnDisconnected = () =>
-    {
-        Console.WriteLine($"  [T{i}] disconnected  total={total:N0}");
-        return ValueTask.CompletedTask;
-    };
+        await using IClientConnection conn = ServerNet.CreateClient();
+        if (cfg.SendTimeoutSeconds > 0)
+            conn.SendTimeout = TimeSpan.FromSeconds(cfg.SendTimeoutSeconds);
+        if (cfg.Features.EnableHeartbeat)
+            conn.PingInterval = TimeSpan.FromSeconds(cfg.PingIntervalSeconds);
 
-    await conn.ConnectAsync(Host, Port, ct);
-
-    if (i == 0 && cfg.Features.EnableRttDisplay)
-    {
-        _ = Task.Run(async () =>
+        conn.OnConnected = () =>
         {
-            while (!ct.IsCancellationRequested)
+            Console.WriteLine($"  [T{i}] connected  damage={damage}");
+            return ValueTask.CompletedTask;
+        };
+        conn.OnDisconnected = () =>
+        {
+            Console.WriteLine($"  [T{i}] disconnected  total={total:N0}");
+            return ValueTask.CompletedTask;
+        };
+
+        // OnReceived: 서버→클라 방향 MobHpPacket / MobDeathPacket 처리.
+        // T0만 HP 바를 출력해 콘솔 스팸 방지 — 사망 패킷은 모든 스레드가 출력(저빈도).
+        conn.OnReceived = data =>
+        {
+            if (!PacketPool.TryParseHeader(data.Span, out ushort pktId, out _))
+                return ValueTask.CompletedTask;
+
+            if (pktId == MobHpPacket.Id && i == 0)
             {
-                try { await Task.Delay(TimeSpan.FromSeconds(cfg.RttDisplayIntervalSeconds), ct); }
-                catch (OperationCanceledException) { break; }
-                Console.WriteLine($"  [T0] RTT={conn.Rtt.TotalMilliseconds:F1}ms");
+                // T0만 HP 진행 바를 출력 — 200ms 주기 브로드캐스트에서 스레드마다 출력하면 콘솔 범람
+                var hp = serializer.Deserialize<MobHpPacket>(data.Span);
+                int barLen = hp.MaxHp > 0 ? (int)(hp.Hp * 30 / hp.MaxHp) : 0;
+                barLen = Math.Clamp(barLen, 0, 30);
+                string bar = new string('█', barLen) + new string('░', 30 - barLen);
+                Console.WriteLine($"  [HP] [{bar}] {hp.Hp:N0}/{hp.MaxHp:N0}  gen={hp.Generation}");
             }
-        });
+            else if (pktId == MobDeathPacket.Id)
+            {
+                // 사망은 저빈도 — 모든 스레드가 출력해 각 클라이언트 관점의 처치 통보를 시연
+                var death = serializer.Deserialize<MobDeathPacket>(data.Span);
+                Console.WriteLine($"  [처치] T{i}  gen={death.Generation}  MVP={death.MvpName}  topDmg={death.TopDamage:N0}");
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        await conn.ConnectAsync(Host, Port, ct);
+
+        if (i == 0 && cfg.Features.EnableRttDisplay)
+        {
+            _ = Task.Run(async () =>
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(cfg.RttDisplayIntervalSeconds), ct); }
+                    catch (OperationCanceledException) { break; }
+                    Console.WriteLine($"  [T0] RTT={conn.Rtt.TotalMilliseconds:F1}ms");
+                }
+            });
+        }
+
+        while (!ct.IsCancellationRequested && (sendCount is null || total < sendCount))
+        {
+            long batchEnd = sendCount is null
+                ? total + BatchSize
+                : Math.Min(total + BatchSize, sendCount.Value);
+            for (; total < batchEnd && !ct.IsCancellationRequested; total++)
+            {
+                await conn.SendAsync(dmgMem, ct);
+            }
+            Console.WriteLine($"  [T{i}] damage={damage}  전송={total:N0}회");
+        }
+    }
+    finally
+    {
+        // 취소·예외 경로에서도 풀 버퍼를 반드시 반납
+        ArrayPool<byte>.Shared.Return(dmgBuf);
     }
 
-    while (!ct.IsCancellationRequested && (sendCount is null || total < sendCount))
-    {
-        long batchEnd = sendCount is null
-            ? total + BatchSize
-            : Math.Min(total + BatchSize, sendCount.Value);
-        for (; total < batchEnd && !ct.IsCancellationRequested; total++)
-        {
-            await conn.SendAsync(sendMem, ct);
-        }
-        Console.WriteLine($"  [T{i}] {label} {total:N0}회 전송");
-    }
     return total; // [측정] 스레드별 실제 전송 패킷 수 — bytesPerPacket 분모 집계용
 }).ToArray();
 
-// [측정] 측정 윈도 시작점: 부하 직전 누적 할당 바이트·GC 카운트·고해상도 타임스탬프를 캡처한다.
-// GC.GetTotalAllocatedBytes(true): 모든 스레드의 누적 할당을 정밀 집계(true=GC 강제로 보류분까지 반영) → 송신당 CTS 할당 같은 핫패스 alloc을 직접 본다.
+// [측정] 측정 윈도 시작점: 태스크 생성 후·WhenAll 전 기준점 캡처.
+// GC.GetTotalAllocatedBytes(true): 모든 스레드 누적 할당을 정밀 집계 — 송신 hot path alloc을 직접 측정
 long allocStart = GC.GetTotalAllocatedBytes(precise: true);
 int gen0Start = GC.CollectionCount(0);
 int gen1Start = GC.CollectionCount(1);
@@ -129,9 +160,6 @@ long allocDelta = GC.GetTotalAllocatedBytes(precise: true) - allocStart;
 long grandTotal = 0;
 foreach (var t in perThread) grandTotal += t;
 double bytesPerPacket = grandTotal > 0 ? (double)allocDelta / grandTotal : 0;
-
-ArrayPool<byte>.Shared.Return(incBuf);
-ArrayPool<byte>.Shared.Return(decBuf);
 
 Console.WriteLine("모든 스레드 종료.");
 // [CLIENTSTATS]: 하네스가 머신 파싱하는 측정 신호(ASCII·고정 key=value). 송신 경로 할당률(bytesPerPacket)이 1순위 지표.
