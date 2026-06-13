@@ -141,6 +141,24 @@ public ref struct SpanReader
     }
 
     /// <summary>
+    /// 남은 모든 바이트를 Zero-copy 슬라이스로 반환하고 위치를 끝으로 이동합니다.
+    /// 본문 전체를 길이 접두어 없이 읽어야 하는 패킷(예: <c>StatsResponsePacket</c>)에서 사용합니다.
+    /// </summary>
+    /// <returns>현재 위치부터 버퍼 끝까지의 슬라이스입니다. 원본 버퍼 수명에 종속됩니다.</returns>
+    /// <remarks>
+    /// <b>[Memory Allocation:]</b> Zero-allocation. 복사 없이 슬라이스를 반환합니다.
+    /// 반환된 <see cref="ReadOnlySpan{T}"/>를 보관하려면 호출자가 <c>.ToArray()</c>로 깊은복사해야 합니다.
+    /// </remarks>
+    public ReadOnlySpan<byte> ReadRemainingBytes()
+    {
+        // Slice(_position): 복사 없이 현재 위치부터 끝까지의 얕은 뷰를 반환(zero-copy).
+        // 이후 _position을 끝으로 이동해 중복 읽기를 방지한다.
+        var span = _buffer.Slice(_position);
+        _position = _buffer.Length;
+        return span;
+    }
+
+    /// <summary>
     /// [길이(2B ushort) + UTF-8 바이트] 형식의 문자열을 읽습니다.
     /// </summary>
     /// <returns>디코딩된 문자열입니다.</returns>

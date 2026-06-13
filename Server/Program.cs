@@ -7,6 +7,8 @@ using ServerLib.Core.Memory;                  // PacketPool: 헤더 파싱 유�
 using ServerLib.Core.Serialization;           // BinaryPacketSerializer / PacketSendExtensions
 using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket
 using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry
+using System.Diagnostics;                      // Process / ProcessThread / PerformanceCounter (Windows 전용)
+using System.Text.Json;                        // JsonSerializer — volatile JSON 스냅샷 직렬화
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -35,6 +37,28 @@ var serializer = new BinaryPacketSerializer();
 long totalReceived = 0;
 long windowPackets = 0;
 using var cts = new CancellationTokenSource();
+
+// StatsHolder: CPU 샘플러 Task가 volatile 필드에 쓰고, 관리 핸들러가 락 없이 읽는 스냅샷 홀더
+// volatile string: 불변(immutable) 참조 교체가 64비트에서 원자적 + 컴파일러·CPU 재정렬 차단
+var statsHolder = new StatsHolder();
+
+// PerformanceCounter[]: Windows 커널 GetSystemTimes 래퍼 — per-core CPU% 측정에 필요
+// Process.Threads.TotalProcessorTime은 누적값이라 단일 읽기로 %를 얻을 수 없어
+// PerformanceCounter(GetSystemTimes delta) 방식이 정확한 순간 CPU% 계산의 유일한 방법
+// CA1416 억제: OperatingSystem.IsWindows() 삼항 true 분기에서만 PerformanceCounter를 생성하므로 안전
+#pragma warning disable CA1416
+PerformanceCounter[]? perfCounters = OperatingSystem.IsWindows()
+    ? Enumerable.Range(0, Environment.ProcessorCount)
+          .Select(i => new PerformanceCounter("Processor", "% Processor Time", i.ToString()))
+          .ToArray()
+    : null;
+#pragma warning restore CA1416
+// 워밍업: NextValue() 첫 호출은 항상 0 반환 → 유효한 delta 값을 위해 1틱 선행 호출이 필수
+// CA1416 억제: OperatingSystem.IsWindows() 가드로 이미 Windows 환경임을 보증
+#pragma warning disable CA1416
+if (perfCounters != null)
+    foreach (var c in perfCounters) _ = c.NextValue();
+#pragma warning restore CA1416
 
 // 보스 몹: 사망 시 MobDeathPacket 브로드캐스트 후 자동 리스폰
 var mob = new MobManager(maxHp: MobMaxHp, onDeath: deathPkt =>
@@ -115,8 +139,24 @@ if (cfg.Features.EnableIdleTimeout)
     };
 }
 
+// ServerNet.CreateListener(null): 레지스트리 없이 생성 → 관리 연결이 게임 ActiveSessionCount를 건드리지 않음
+// SocketPipelineListener(registrar=null): Register/Unregister를 건너뛰므로 게임 세션 카운트가 순수하게 유지됨
+IServerListener adminListener = ServerNet.CreateListener();
+adminListener.OnReceived = async (session, data) =>
+{
+    if (PacketPool.TryParseHeader(data.Span, out ushort adminPktId, out _)
+        && adminPktId == StatsRequestPacket.Id)
+    {
+        // statsHolder.Json: volatile 읽기 → 샘플러 Task가 직전에 기록한 최신 스냅샷 반환(락 없이 안전)
+        await session.SendAsync(new StatsResponsePacket { Json = statsHolder.Json });
+    }
+};
+// 관리 리스너에는 IdleTimeout 미설정 — 모니터가 5초 주기 폴링 시 게임 30s idle-timeout에 끊기지 않게 함
+
 listener.Start(cfg.Port);
+adminListener.Start(cfg.AdminPort);
 Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
+Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
 Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
@@ -171,6 +211,94 @@ _ = Task.Run(async () =>
     }
 });
 
+// CPU 샘플러 Task: PerformanceCounter + Process.Threads delta로 스레드별·호스트 per-core CPU% 계산.
+// 요청당 계산 금지: 다중 모니터 동시 접속 시 각자의 "직전 스냅샷"이 서로를 오염시킴.
+// 고정 주기 delta 방식으로 모든 요청이 동일한 샘플러 결과를 공유한다.
+_ = Task.Run(async () =>
+{
+    // Process: 현재 프로세스의 스레드 목록·메모리 정보 — Refresh()로 OS에서 재조회
+    var proc = Process.GetCurrentProcess();
+    // prevThreadTimes: threadId → 직전 TotalProcessorTime(누적) — delta 계산용
+    var prevThreadTimes = new Dictionary<int, TimeSpan>();
+    var prevWall = DateTime.UtcNow;
+
+    while (!cts.Token.IsCancellationRequested)
+    {
+        try { await Task.Delay(cfg.MonitorSampleIntervalMs, cts.Token); }
+        catch (OperationCanceledException) { break; }
+
+        var now = DateTime.UtcNow;
+        double wallMs = Math.Max((now - prevWall).TotalMilliseconds, 1.0); // 0 나눗셈 방지
+        prevWall = now;
+
+        // 스레드별 CPU% = (현재 TotalProcessorTime - 직전) / wallMs * 100
+        proc.Refresh(); // OS에서 최신 스레드 목록·WorkingSet 재조회
+        var threadEntries = new List<object>();
+        bool truncated = false;
+        const int MaxThreads = 128; // 64KB BodyLength 상한 대응 — 128×~35B ≈ 4500B, 여유 충분
+
+        foreach (ProcessThread t in proc.Threads)
+        {
+            if (threadEntries.Count >= MaxThreads) { truncated = true; break; }
+            double cpuMs = 0;
+            try
+            {
+                var cur = t.TotalProcessorTime;
+                if (prevThreadTimes.TryGetValue(t.Id, out var prev))
+                    cpuMs = (cur - prev).TotalMilliseconds;
+                prevThreadTimes[t.Id] = cur;
+            }
+            catch { /* 스레드 종료 직후 접근 불가 — 무시하고 다음 틱에서 자동 정리 */ }
+            threadEntries.Add(new { id = t.Id, cpuPercent = Math.Round(cpuMs / wallMs * 100.0, 2) });
+        }
+
+        // 호스트 per-core CPU (Windows 전용)
+        // PerformanceCounter.NextValue(): GetSystemTimes 기반 — 각 코어의 Idle/Kernel/User 시간 delta를 반환
+        // CA1416 억제: perfCounters != null はWindowsでのみ生成される(OperatingSystem.IsWindows() 가드 위쪽)
+#pragma warning disable CA1416
+        double[]? roundedCorePercents = perfCounters?
+            .Select(c => Math.Round(c.NextValue(), 2))
+            .ToArray();
+#pragma warning restore CA1416
+        double? cpuTotalPct = roundedCorePercents != null && roundedCorePercents.Length > 0
+            ? Math.Round(roundedCorePercents.Average(), 2) : null;
+
+        // GC.GetGCMemoryInfo(): 마지막 GC 수집 시점의 호스트 메모리 통계 — 크로스플랫폼, 약간 stale 허용
+        var gcInfo = GC.GetGCMemoryInfo();
+        var (hp, maxHp, gen) = mob.Snapshot();
+
+        var snapshot = new
+        {
+            timestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            sessions = listener.ActiveSessionCount,
+            mob = new { hp, maxHp, gen },
+            process = new
+            {
+                workingSetBytes = proc.WorkingSet64,
+                gcHeapBytes     = GC.GetTotalMemory(false),
+                threadCount     = proc.Threads.Count,
+                threadsTruncated = truncated,
+                threads         = threadEntries
+            },
+            host = new
+            {
+                logicalCores           = Environment.ProcessorCount,
+                cpuPerCorePercent      = roundedCorePercents,  // double[]? — null on non-Windows
+                cpuTotalPercent        = cpuTotalPct,          // double?   — null on non-Windows
+                memoryLoadBytes        = gcInfo.MemoryLoadBytes,
+                totalAvailableMemoryBytes = gcInfo.TotalAvailableMemoryBytes
+            }
+        };
+
+        // JsonSerializer.Serialize: 리플렉션 기반 — 저빈도 관리 경로이므로 할당 허용
+        statsHolder.Json = JsonSerializer.Serialize(snapshot);
+    }
+
+    // 정리: PerformanceCounter는 Win32 리소스를 보유하므로 명시적 해제
+    if (perfCounters != null)
+        foreach (var c in perfCounters) c.Dispose();
+});
+
 while (true)
 {
     var line = Console.ReadLine();
@@ -184,6 +312,7 @@ while (true)
 
 cts.Cancel();
 listener.Stop();
+adminListener.Stop();
 
 var (finalHp, _, finalGen) = mob.Snapshot();
 Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final hp={finalHp}  gen={finalGen}");
@@ -193,3 +322,17 @@ Console.WriteLine($"[STATS] received={Volatile.Read(ref totalReceived)} hp={fina
 
 // 세션에 부착할 커스텀 컨텍스트 — GameContext(PlayerId, Nickname) 예제
 record GameContext(int PlayerId = 0, string Nickname = "Guest");
+
+/// <summary>
+/// CPU 샘플러 Task가 쓰고 관리 핸들러가 읽는 volatile JSON 스냅샷 홀더.
+/// volatile 필드는 class 인스턴스에만 선언 가능하므로 별도 클래스로 분리합니다.
+/// </summary>
+// sealed: 상속 없는 단일 내부 타입 — JIT devirtualization 허용.
+// volatile string: 컴파일러·CPU 재정렬 차단 + 각 코어의 캐시 무효화 보장.
+//   string은 불변(immutable) 참조 타입이므로 64비트에서 참조 교체가 원자적.
+//   읽기측은 항상 완전한 이전 값 또는 완전한 새 값 중 하나만 봄(torn-read 없음).
+sealed class StatsHolder
+{
+    private volatile string _json = "{}";
+    public string Json { get => _json; set => _json = value; }
+}

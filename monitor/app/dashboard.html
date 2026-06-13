@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Game Server Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0;
+      min-height: 100vh; padding: 24px;
+    }
+    header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 8px; }
+    h1 { font-size: 1.4rem; font-weight: 700; color: #7dd3fc; }
+    .status-bar { font-size: 0.78rem; color: #64748b; margin-bottom: 20px; }
+    .servers {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
+      gap: 20px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: #1e293b; border: 1px solid #334155;
+      border-radius: 12px; padding: 20px;
+    }
+    .card.offline { border-color: #7f1d1d; opacity: 0.75; }
+
+    .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .badge {
+      font-size: 0.68rem; padding: 2px 8px;
+      border-radius: 999px; font-weight: 700; letter-spacing: 0.05em;
+    }
+    .badge.online  { background: #14532d; color: #4ade80; }
+    .badge.offline { background: #450a0a; color: #f87171; }
+    .card-title   { font-size: 1.05rem; font-weight: 600; }
+    .card-addr    { font-size: 0.73rem; color: #475569; margin-left: auto; }
+
+    /* ── Big metric ── */
+    .big-number {
+      font-size: 2.8rem; font-weight: 700; color: #7dd3fc;
+      text-align: center; margin: 10px 0 4px;
+      font-variant-numeric: tabular-nums;
+    }
+    .big-label { text-align: center; color: #64748b; font-size: 0.78rem; margin-bottom: 14px; }
+
+    /* ── Section ── */
+    .section-title {
+      font-size: 0.68rem; text-transform: uppercase;
+      letter-spacing: 0.12em; color: #475569; margin: 14px 0 8px;
+      padding-bottom: 4px; border-bottom: 1px solid #1e293b;
+    }
+
+    /* ── Row ── */
+    .row {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 6px; font-size: 0.83rem;
+    }
+    .row-label { color: #94a3b8; }
+    .row-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* ── Progress bar ── */
+    .bar-wrap { display: grid; grid-template-columns: 28px 1fr 46px; gap: 6px; align-items: center; margin-bottom: 5px; font-size: 0.76rem; }
+    .bar-lbl { color: #64748b; }
+    .bar-bg  { background: #0f172a; border-radius: 4px; height: 9px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.45s ease; }
+    .bar-fill.lo  { background: #3b82f6; }
+    .bar-fill.mid { background: #f59e0b; }
+    .bar-fill.hi  { background: #ef4444; }
+    .bar-pct { text-align: right; color: #94a3b8; }
+
+    /* ── Mob HP bar ── */
+    .mob-bar { height: 7px; background: #0f172a; border-radius: 4px; overflow: hidden; margin-top: 5px; }
+    .mob-fill { height: 100%; border-radius: 4px; background: #f59e0b; transition: width 0.45s ease; }
+    .mob-fill.dead { background: #6b7280; }
+
+    /* ── Thread table ── */
+    .thread-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .thread-table th {
+      color: #475569; font-weight: 500; text-align: left;
+      padding: 3px 0; border-bottom: 1px solid #334155;
+    }
+    .thread-table td { padding: 2px 0; font-variant-numeric: tabular-nums; }
+    .note { font-size: 0.73rem; color: #64748b; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎮 Game Server Monitor</h1>
+  </header>
+  <div class="status-bar" id="statusBar">연결 중…</div>
+  <div class="servers" id="servers"></div>
+
+  <script>
+    /* ── Formatters ── */
+    const dash    = '—';
+    const fmt     = n  => (n == null) ? dash : Number(n).toLocaleString('ko');
+    const fmtMB   = b  => (b == null) ? dash : (b / 1048576).toFixed(1) + ' MB';
+    const fmtPct  = v  => (v == null) ? dash : Number(v).toFixed(1) + '%';
+
+    function barClass(pct) {
+      if (pct >= 85) return 'hi';
+      if (pct >= 55) return 'mid';
+      return 'lo';
+    }
+
+    /* ── Render one bar row ── */
+    function barRow(label, pct) {
+      const p   = Math.min(Math.max(pct ?? 0, 0), 100);
+      const cls = barClass(p);
+      return `
+        <div class="bar-wrap">
+          <span class="bar-lbl">${label}</span>
+          <div class="bar-bg"><div class="bar-fill ${cls}" style="width:${p.toFixed(1)}%"></div></div>
+          <span class="bar-pct">${fmtPct(pct)}</span>
+        </div>`;
+    }
+
+    /* ── Render one server card ── */
+    function renderCard(s) {
+      if (!s.online || !s.snapshot) {
+        return `<div class="card offline">
+          <div class="card-header">
+            <span class="badge offline">OFFLINE</span>
+            <span class="card-title">${s.name}</span>
+            <span class="card-addr">${s.host}:${s.port}</span>
+          </div>
+          <div class="note" style="text-align:center;padding:20px 0">서버에 연결할 수 없습니다</div>
+        </div>`;
+      }
+
+      const sn   = s.snapshot;
+      const proc = sn.process  || {};
+      const host = sn.host     || {};
+      const mob  = sn.mob      || {};
+
+      /* sessions */
+      const sessions = sn.sessions ?? 0;
+
+      /* mob HP */
+      const hp    = mob.hp    ?? 0;
+      const maxHp = mob.maxHp ?? 1;
+      const hpPct = maxHp > 0 ? (hp / maxHp * 100) : 0;
+
+      /* host per-core CPU bars */
+      const cores = host.cpuPerCorePercent;
+      let coreBars = '';
+      if (Array.isArray(cores) && cores.length > 0) {
+        coreBars = cores.map((p, i) => barRow(`C${i}`, p)).join('');
+      } else {
+        coreBars = '<div class="note">호스트 CPU 미지원 (비Windows)</div>';
+      }
+
+      /* top 20 threads by CPU% */
+      const threads = (proc.threads || [])
+        .slice()
+        .sort((a, b) => (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0))
+        .slice(0, 20);
+      const threadRows = threads.map(t =>
+        `<tr><td>${t.id}</td><td>${fmtPct(t.cpuPercent)}</td></tr>`
+      ).join('');
+
+      return `<div class="card">
+        <div class="card-header">
+          <span class="badge online">ONLINE</span>
+          <span class="card-title">${s.name}</span>
+          <span class="card-addr">${s.host}:${s.port}</span>
+        </div>
+
+        <!-- Sessions -->
+        <div class="big-number">${fmt(sessions)}</div>
+        <div class="big-label">세션 수</div>
+
+        <!-- Boss Mob -->
+        <div class="section-title">보스 몹</div>
+        <div class="row">
+          <span class="row-label">HP</span>
+          <span class="row-value">${fmt(mob.hp)} / ${fmt(mob.maxHp)}</span>
+        </div>
+        <div class="mob-bar"><div class="mob-fill ${hp <= 0 ? 'dead' : ''}" style="width:${hpPct.toFixed(1)}%"></div></div>
+        <div class="row" style="margin-top:6px">
+          <span class="row-label">세대</span>
+          <span class="row-value">${fmt(mob.gen)}</span>
+        </div>
+
+        <!-- Host CPU -->
+        <div class="section-title">호스트 CPU (코어별)</div>
+        ${coreBars}
+        <div class="row" style="margin-top:6px">
+          <span class="row-label">전체 평균</span>
+          <span class="row-value">${fmtPct(host.cpuTotalPercent)}</span>
+        </div>
+
+        <!-- Memory -->
+        <div class="section-title">메모리</div>
+        <div class="row">
+          <span class="row-label">호스트 사용 중</span>
+          <span class="row-value">${fmtMB(host.memoryLoadBytes)}</span>
+        </div>
+        <div class="row">
+          <span class="row-label">호스트 전체</span>
+          <span class="row-value">${fmtMB(host.totalAvailableMemoryBytes)}</span>
+        </div>
+        <div class="row">
+          <span class="row-label">프로세스 WorkingSet</span>
+          <span class="row-value">${fmtMB(proc.workingSetBytes)}</span>
+        </div>
+        <div class="row">
+          <span class="row-label">GC 힙</span>
+          <span class="row-value">${fmtMB(proc.gcHeapBytes)}</span>
+        </div>
+
+        <!-- Threads -->
+        <div class="section-title">
+          스레드별 CPU — 상위 20
+          (전체 ${fmt(proc.threadCount)}개${proc.threadsTruncated ? ', 128개 초과로 잘림' : ''})
+        </div>
+        <table class="thread-table">
+          <thead><tr><th>TID</th><th>CPU%</th></tr></thead>
+          <tbody>${threadRows}</tbody>
+        </table>
+      </div>`;
+    }
+
+    /* ── Polling loop ── */
+    async function refresh() {
+      try {
+        const r    = await fetch('/api/metrics');
+        const data = await r.json();
+        const servers = data.servers || [];
+
+        document.getElementById('servers').innerHTML =
+          servers.length > 0
+            ? servers.map(renderCard).join('')
+            : '<div class="note" style="padding:40px">servers.json에 등록된 서버가 없습니다.</div>';
+
+        document.getElementById('statusBar').textContent =
+          `마지막 갱신: ${new Date().toLocaleTimeString('ko')} ` +
+          `| 서버 ${servers.length}대 ` +
+          `| 온라인 ${servers.filter(s => s.online).length}대`;
+      } catch (e) {
+        document.getElementById('statusBar').textContent = `모니터 오류: ${e.message}`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
