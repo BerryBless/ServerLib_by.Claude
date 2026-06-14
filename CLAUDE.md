@@ -9,6 +9,7 @@
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
 - `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`, 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력
 - `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지
+- `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
