@@ -17,7 +17,7 @@ namespace Server.Auth;
 /// 오버헤드가 허용됩니다. 게임 핫패스(DamagePacket 처리)에서는 절대 사용하지 마세요.</description></item>
 /// </list>
 /// </remarks>
-internal sealed class LoginService
+public sealed class LoginService
 {
     private readonly IUserStore _userStore;
     private readonly ITokenStore _tokenStore;
@@ -30,7 +30,11 @@ internal sealed class LoginService
     private static readonly byte[] DummySalt = new byte[PasswordHasher.SaltSize];
     private static readonly byte[] DummyHash = new byte[PasswordHasher.HashSize];
 
-    internal LoginService(IUserStore userStore, ITokenStore tokenStore, TimeSpan tokenTtl, int pbkdfIterations)
+    /// <param name="userStore">사용자 저장소 구현체입니다.</param>
+    /// <param name="tokenStore">토큰 저장소 구현체입니다.</param>
+    /// <param name="tokenTtl">발급 토큰의 유효 기간입니다.</param>
+    /// <param name="pbkdfIterations">PBKDF2 반복 횟수입니다. SeedAsync에 전달한 값과 반드시 일치해야 합니다.</param>
+    public LoginService(IUserStore userStore, ITokenStore tokenStore, TimeSpan tokenTtl, int pbkdfIterations)
     {
         _userStore       = userStore;
         _tokenStore      = tokenStore;
@@ -43,7 +47,7 @@ internal sealed class LoginService
     /// <param name="password">평문 비밀번호입니다.</param>
     /// <param name="ct">작업 취소 토큰입니다.</param>
     /// <returns>로그인 결과입니다. 실패 시 <see cref="LoginResult.Success"/>가 false이며 Token이 빈 문자열입니다.</returns>
-    internal async Task<LoginResult> LoginAsync(string username, string password, CancellationToken ct = default)
+    public async Task<LoginResult> LoginAsync(string username, string password, CancellationToken ct = default)
     {
         // ① MySQL 사용자 조회
         var user = await _userStore.FindByUsernameAsync(username, ct);
@@ -83,7 +87,7 @@ internal sealed class LoginService
 /// <see cref="LoginService.LoginAsync"/>의 결과입니다.
 /// </summary>
 // readonly record struct: 힙 할당 없이 로그인 결과를 반환 — string 필드는 어차피 힙이지만 struct wrapper는 스택.
-internal readonly record struct LoginResult(
+public readonly record struct LoginResult(
     bool   Success,
     long   UserId   = 0,
     string Username = "",

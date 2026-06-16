@@ -46,6 +46,14 @@ public sealed class ServerFeatures
     /// false이면 LoginRequestPacket(Id=10)을 무시하고 기존 게임 흐름에 영향을 주지 않습니다.
     /// </summary>
     public bool EnableLogin { get; set; } = false;
+
+    /// <summary>
+    /// Redis 토큰 게이팅 활성화 여부입니다.
+    /// true이면 DamagePacket 처리 전 <c>AuthContext</c> 유무를 확인해 미인증 세션을 즉시 드롭합니다.
+    /// Redis 연결이 필요하므로 true 시 Auth.RedisConnectionString이 유효해야 합니다.
+    /// false(기본)이면 기존 보스몹 데모가 인증 없이 그대로 동작합니다.
+    /// </summary>
+    public bool RequireAuth { get; set; } = false;
 }
 
 /// <summary>

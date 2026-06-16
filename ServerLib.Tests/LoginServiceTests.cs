@@ -100,7 +100,7 @@ file sealed class FakeUserStore : IUserStore
         => Task.FromResult(_users.TryGetValue(username, out var u) ? u : null);
 }
 
-/// <summary>인메모리 페이크 토큰 저장소 — 저장 호출 기록용.</summary>
+/// <summary>인메모리 페이크 토큰 저장소 — 저장 호출 기록 및 조회 검증용.</summary>
 file sealed class FakeTokenStore : ITokenStore
 {
     public List<(string Token, long UserId, TimeSpan Ttl)> Stored { get; } = [];
@@ -109,6 +109,14 @@ file sealed class FakeTokenStore : ITokenStore
     {
         Stored.Add((token, userId, ttl));
         return Task.CompletedTask;
+    }
+
+    // TryGetUserIdAsync: ITokenStore 인터페이스 확장 — Stored 목록에서 토큰 매칭(테스트용, TTL 무시)
+    public Task<long?> TryGetUserIdAsync(string token, CancellationToken ct = default)
+    {
+        var match = Stored.Find(s => s.Token == token);
+        long? result = match.Token != null ? match.UserId : null;
+        return Task.FromResult(result);
     }
 }
 

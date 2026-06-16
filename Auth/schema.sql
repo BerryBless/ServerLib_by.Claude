@@ -1,7 +1,7 @@
 -- ============================================================
 -- ClaudeCodeStudy — 인증 데이터베이스 스키마
 -- MySQL 8.0+ / MariaDB 10.5+ 호환
--- 실행: mysql -u root -p < Server/Auth/schema.sql
+-- 실행: mysql -u root -p < Auth/schema.sql
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS gamedb
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 --
 -- [방법 A] appsettings.json 토글 사용 (권장, 최초 1회)
 --   "Auth": { "SeedTestUser": true, "SeedUsername": "admin", "SeedPassword": "password123" }
---   → dotnet run --project Server 실행 시 서버가 자동으로 admin 사용자를 생성하고 로그에 출력합니다.
+--   → dotnet run --project AuthServer (또는 Server) 실행 시 자동으로 admin 사용자를 생성합니다.
 --   → 생성 후 SeedTestUser를 false로 되돌리세요.
 --
 -- [방법 B] 테스트에서 해시 생성 후 수동 INSERT

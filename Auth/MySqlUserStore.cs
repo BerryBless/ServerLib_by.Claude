@@ -14,7 +14,7 @@ namespace Server.Auth;
 /// <item><description><b>SQL Injection:</b> 파라미터라이즈드 쿼리(@u 등)로 SQL 인젝션을 원천 차단합니다.</description></item>
 /// </list>
 /// </remarks>
-internal sealed class MySqlUserStore : IUserStore
+public sealed class MySqlUserStore : IUserStore
 {
     // MySqlConnection: ADO.NET 커넥션 풀이 내부적으로 실제 TCP 소켓을 재사용합니다.
     // per-query 생성·폐기 패턴(using var conn = new MySqlConnection(...))이 안전한 이유:
@@ -22,7 +22,7 @@ internal sealed class MySqlUserStore : IUserStore
     private readonly string _connectionString;
 
     /// <param name="connectionString">MySQL 연결 문자열입니다. (예: "Server=127.0.0.1;Database=gamedb;User ID=root;Password=...;")</param>
-    internal MySqlUserStore(string connectionString)
+    public MySqlUserStore(string connectionString)
     {
         _connectionString = connectionString;
     }
@@ -54,7 +54,7 @@ internal sealed class MySqlUserStore : IUserStore
     /// <summary>
     /// users 테이블이 없으면 생성합니다. 서버 시작 시 1회 호출합니다.
     /// </summary>
-    internal static async Task EnsureSchemaAsync(string connectionString, CancellationToken ct = default)
+    public static async Task EnsureSchemaAsync(string connectionString, CancellationToken ct = default)
     {
         using var conn = new MySqlConnection(connectionString);
         await conn.OpenAsync(ct);
@@ -79,7 +79,7 @@ internal sealed class MySqlUserStore : IUserStore
     /// <param name="password">평문 비밀번호입니다. 내부에서 PBKDF2 해시로 변환됩니다.</param>
     /// <param name="iterations">PBKDF2 반복 횟수입니다. <b>LoginService에 주입된 값과 반드시 일치</b>해야 합니다.
     /// 다르면 로그인 검증 시 해시 불일치로 인증이 영구 실패합니다.</param>
-    internal static async Task SeedAsync(string connectionString, string username, string password,
+    public static async Task SeedAsync(string connectionString, string username, string password,
         int iterations = PasswordHasher.DefaultIterations, CancellationToken ct = default)
     {
         using var conn = new MySqlConnection(connectionString);

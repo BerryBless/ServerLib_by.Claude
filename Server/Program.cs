@@ -24,22 +24,37 @@ var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
 // 생성 비용이 크고(DNS 해석 + TCP 연결 협상) 장수명 객체이므로 프로세스당 싱글톤 1개만 유지한다.
 // 프로세스 종료 시 Dispose()로 명시적 해제 필수.
 ConnectionMultiplexer? redis = null;
+// RedisTokenStore: EnableLogin(토큰 저장)·RequireAuth(토큰 검증) 양쪽에서 공유 — 인스턴스 분리 금지.
+RedisTokenStore? tokenStore = null;
 LoginService? loginService = null;
-if (cfg.Features.EnableLogin)
+// EnableLogin: 게임 서버 자체 로그인 기능. RequireAuth: Redis 토큰 게이팅(AuthServer 연계).
+// 두 기능 중 하나라도 활성화이면 Redis 연결 필요.
+if (cfg.Features.EnableLogin || cfg.Features.RequireAuth)
 {
     redis = ConnectionMultiplexer.Connect(cfg.Auth.RedisConnectionString);
-    if (cfg.Auth.SeedTestUser)
+    // RedisTokenStore: 게임서버 토큰 검증(RequireAuth)·LoginService 토큰 저장(EnableLogin) 공유.
+    // ConnectionMultiplexer는 멀티플렉싱으로 동시 호출 안전 — 단일 인스턴스 공유 가능.
+    tokenStore = new RedisTokenStore(redis);
+
+    if (cfg.Features.EnableLogin)
     {
-        await MySqlUserStore.EnsureSchemaAsync(cfg.Auth.MySqlConnectionString);
-        // cfg.Auth.PbkdfIterations를 함께 전달 — 시드 해시와 검증 해시의 반복수가 달라지면 로그인이 영구 실패함
-        await MySqlUserStore.SeedAsync(cfg.Auth.MySqlConnectionString, cfg.Auth.SeedUsername, cfg.Auth.SeedPassword, cfg.Auth.PbkdfIterations);
+        if (cfg.Auth.SeedTestUser)
+        {
+            await MySqlUserStore.EnsureSchemaAsync(cfg.Auth.MySqlConnectionString);
+            // cfg.Auth.PbkdfIterations를 함께 전달 — 시드 해시와 검증 해시의 반복수가 달라지면 로그인이 영구 실패함
+            await MySqlUserStore.SeedAsync(cfg.Auth.MySqlConnectionString, cfg.Auth.SeedUsername, cfg.Auth.SeedPassword, cfg.Auth.PbkdfIterations);
+        }
+        loginService = new LoginService(
+            new MySqlUserStore(cfg.Auth.MySqlConnectionString),
+            tokenStore,
+            TimeSpan.FromSeconds(cfg.Auth.TokenTtlSeconds),
+            cfg.Auth.PbkdfIterations);
+        Console.WriteLine($"[Login] 인증 모듈 초기화 완료 (MySQL+Redis)  tokenTtl={cfg.Auth.TokenTtlSeconds}s  pbkdf={cfg.Auth.PbkdfIterations}iter");
     }
-    loginService = new LoginService(
-        new MySqlUserStore(cfg.Auth.MySqlConnectionString),
-        new RedisTokenStore(redis),
-        TimeSpan.FromSeconds(cfg.Auth.TokenTtlSeconds),
-        cfg.Auth.PbkdfIterations);
-    Console.WriteLine($"[Login] 인증 모듈 초기화 완료 (MySQL+Redis)  tokenTtl={cfg.Auth.TokenTtlSeconds}s  pbkdf={cfg.Auth.PbkdfIterations}iter");
+    else
+    {
+        Console.WriteLine($"[Login] Redis 토큰 검증 초기화 완료 (RequireAuth 전용 — 로그인은 AuthServer 전담)");
+    }
 }
 
 // ISessionRegistry: 브로드캐스트(BroadcastAsync)는 레지스트리 없이 불가 → 게임 컨텐츠에서 필수.
@@ -146,6 +161,10 @@ listener.OnReceived = async (session, data) =>
 
     if (packetId == DamagePacket.Id)
     {
+        // RequireAuth 게이팅: 미인증 세션의 DamagePacket을 핫패스에서 즉시 드롭(무할당·락 없음).
+        // GetContext<AuthContext>(): session.Context를 as-캐스팅 — 힙 접근 1회, 분기 1회로 최소화.
+        // RequireAuth=false(기본)이면 이 가드가 false 분기로 스킵 → 기존 보스몹 데모 무변경 동작.
+        if (cfg.Features.RequireAuth && session.GetContext<AuthContext>() is null) return;
         // Deserialize<T>: 헤더 포함 전체 프레임(data.Span)을 받아 내부에서 헤더 4B를 슬라이스로 건너뜀
         var pkt = serializer.Deserialize<DamagePacket>(data.Span);
         var label = session.GetContext<GameContext>()?.Nickname ?? session.RemoteEndPoint?.ToString() ?? "?";
@@ -172,6 +191,28 @@ listener.OnReceived = async (session, data) =>
         else
         {
             Console.WriteLine($"[AUTH-] {session.RemoteEndPoint}  user={req.Username}  로그인 실패");
+        }
+    }
+    else if (packetId == AuthTokenPacket.Id && tokenStore is not null)
+    {
+        // AuthTokenPacket(Id=12): 클라이언트가 AuthServer에서 발급받은 토큰을 게임 서버에 제시.
+        // Redis에서 토큰 존재·유효성을 검증(1 RTT) — 유효하면 세션을 Authenticated 상태로 전이.
+        var tok = serializer.Deserialize<AuthTokenPacket>(data.Span);
+        // TryGetUserIdAsync: Redis GET 1 RTT — Non-blocking(StackExchange.Redis 파이프라이닝)
+        var userId = await tokenStore.TryGetUserIdAsync(tok.Token);
+        bool ok = userId is not null;
+        // LoginResponsePacket 재사용: 별도 ack 패킷 불필요 — 클라이언트 OnReceived의 기존 분기 재사용
+        await session.SendAsync(new LoginResponsePacket { Success = ok, Token = ok ? tok.Token : string.Empty });
+        if (ok)
+        {
+            session.TransitionTo(SessionState.Authenticated);
+            // AuthContext.Username: 토큰만으로는 사용자명 조회 불가 → 빈 문자열(차기 정교화 포인트)
+            session.Context = new AuthContext(userId!.Value, string.Empty, tok.Token);
+            Console.WriteLine($"[GATE+] {session.RemoteEndPoint}  토큰 검증 성공  userId={userId}  token={tok.Token[..Math.Min(8, tok.Token.Length)]}...");
+        }
+        else
+        {
+            Console.WriteLine($"[GATE-] {session.RemoteEndPoint}  토큰 검증 실패(만료·미존재)  token={tok.Token[..Math.Min(8, tok.Token.Length)]}...");
         }
     }
 };
@@ -204,7 +245,7 @@ listener.Start(cfg.Port);
 adminListener.Start(cfg.AdminPort);
 Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
 Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
-Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} login={cfg.Features.EnableLogin}");
+Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} login={cfg.Features.EnableLogin} requireAuth={cfg.Features.RequireAuth}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 // 주기 HP 브로드캐스트 Task: 200ms마다 전체 클라에 현재 HP 전송.

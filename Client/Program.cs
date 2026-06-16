@@ -127,6 +127,51 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
             Console.WriteLine($"  [LOGIN] T0 로그인 요청 전송  user={cfg.Login.Username}");
         }
 
+        // AuthGating prelude: T0가 AuthServer(cfg.AuthPort)에 먼저 로그인한 뒤 토큰을 게임 서버에 제시.
+        // EnableAuthGating=false(기본)이면 이 블록이 스킵 → 기존 attack-loop 무변경 동작.
+        if (i == 0 && cfg.Features.EnableAuthGating)
+        {
+            // TaskCompletionSource: authConn.OnReceived 콜백에서 토큰을 캡처해 await 지점으로 전달
+            // RunContinuationsAsynchronously: TCS 완료 시 콜백 스레드를 즉시 해제 — I/O 스레드 블로킹 방지
+            var tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // await using: AuthServer 전용 연결 — 토큰 수신 후 자동 Dispose(TCP 연결 해제)
+            await using (var authConn = ServerNet.CreateClient())
+            {
+                authConn.OnReceived = authData =>
+                {
+                    if (PacketPool.TryParseHeader(authData.Span, out ushort pid, out _)
+                        && pid == LoginResponsePacket.Id)
+                    {
+                        var resp = serializer.Deserialize<LoginResponsePacket>(authData.Span);
+                        // TrySetResult: 1회만 완료 — 재전송 보호
+                        tokenTcs.TrySetResult(resp.Success ? resp.Token : string.Empty);
+                    }
+                    return ValueTask.CompletedTask;
+                };
+
+                await authConn.ConnectAsync(cfg.Host, cfg.AuthPort, ct);
+                await authConn.SendAsync(
+                    new LoginRequestPacket { Username = cfg.Login.Username, Password = cfg.Login.Password }, ct);
+                Console.WriteLine($"  [AUTHGATE] T0 AuthServer(:{cfg.AuthPort})에 로그인 요청  user={cfg.Login.Username}");
+
+                // WaitAsync: 10초 타임아웃 — AuthServer 미응답 시 공격 루프로 계속 진행(스탠드얼론 설계)
+                string token;
+                try { token = await tokenTcs.Task.WaitAsync(TimeSpan.FromSeconds(10), ct); }
+                catch (TimeoutException) { token = string.Empty; Console.WriteLine("  [AUTHGATE] T0 토큰 수신 타임아웃 — 인증 없이 진행"); }
+                // authConn: await using 블록 종료 시 DisposeAsync() → AuthServer TCP 연결 해제
+
+                if (!string.IsNullOrEmpty(token))
+                {
+                    var snip = token.Length >= 8 ? token[..8] + "..." : token;
+                    Console.WriteLine($"  [AUTHGATE] T0 토큰 수신 성공: {snip}");
+                    // AuthTokenPacket(Id=12): 게임 서버에 토큰 제시 → 서버가 Redis 검증 후 LoginResponsePacket으로 ack
+                    await conn.SendAsync(new AuthTokenPacket { Token = token }, ct);
+                    Console.WriteLine($"  [AUTHGATE] T0 게임 서버에 AuthTokenPacket 제시");
+                }
+            }
+        }
+
         if (i == 0 && cfg.Features.EnableRttDisplay)
         {
             _ = Task.Run(async () =>

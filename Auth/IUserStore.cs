@@ -14,7 +14,7 @@ namespace Server.Auth;
 /// 단, 네트워크 지연 또는 DB 과부하 시 완료가 지연될 수 있습니다.</description></item>
 /// </list>
 /// </remarks>
-internal interface IUserStore
+public interface IUserStore
 {
     /// <summary>사용자 이름으로 사용자 레코드를 조회합니다.</summary>
     /// <param name="username">조회할 사용자 이름입니다.</param>

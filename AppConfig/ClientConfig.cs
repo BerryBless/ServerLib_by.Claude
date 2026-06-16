@@ -12,8 +12,14 @@ public sealed class ClientConfig
     /// <summary>송신 1건의 시한(초). 0이면 비활성(SendAsync 송신당 CTS 미할당). A/B 측정용 토글.</summary>
     public int SendTimeoutSeconds { get; set; } = 30;
     public ClientFeatures Features { get; set; } = new();
-    /// <summary>로그인 자격증명입니다. Features.EnableLogin이 true일 때 사용됩니다.</summary>
+    /// <summary>로그인 자격증명입니다. Features.EnableLogin / Features.EnableAuthGating이 true일 때 사용됩니다.</summary>
     public LoginCredentials Login { get; set; } = new();
+
+    /// <summary>
+    /// 인증 서버(AuthServer) 수신 포트입니다.
+    /// Features.EnableAuthGating이 true일 때 T0가 이 포트로 접속해 토큰을 발급받습니다.
+    /// </summary>
+    public int AuthPort { get; set; } = 9200;
 }
 
 /// <summary>클라이언트 기능 on/off 토글.</summary>
@@ -27,6 +33,13 @@ public sealed class ClientFeatures
     /// 서버의 EnableLogin과 독립적이며, 서버가 로그인을 지원하지 않으면 패킷이 무시됩니다.
     /// </summary>
     public bool EnableLogin { get; set; } = false;
+
+    /// <summary>
+    /// true이면 T0 스레드가 AuthServer(ClientConfig.AuthPort)에 먼저 로그인한 뒤
+    /// 발급된 토큰을 AuthTokenPacket(Id=12)으로 게임 서버에 제시합니다.
+    /// EnableLogin과 독립적이며, 기본 false이면 기존 attack-loop가 무변경으로 동작합니다.
+    /// </summary>
+    public bool EnableAuthGating { get; set; } = false;
 }
 
 /// <summary>클라이언트 로그인 자격증명 설정입니다.</summary>

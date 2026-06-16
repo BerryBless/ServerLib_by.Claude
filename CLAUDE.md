@@ -7,8 +7,9 @@
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
-- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`, 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력
-- `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지
+- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`(`RequireAuth` 토글로 미인증 드롭 가능), 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력; `LoginRequestPacket`(Id=10)·`AuthTokenPacket`(Id=12) 병행 처리·`[AUTH+]`/`[GATE+]` 로그
+- `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지; `EnableAuthGating` 토글로 T0가 AuthServer(9200)→토큰→게임서버 `AuthTokenPacket` 제시 데모
+- `AuthServer/Program.cs` — 독립 인증 서버 예제(port 9200): `ServerNet.CreateListener()`(registry 생략) + `LoginService` 전담 → `LoginRequestPacket`(Id=10)만 처리, Redis 토큰 발급
 - `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
@@ -69,6 +70,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/nuget_distribution_0611.md` | 2026-06-11 | ServerLib NuGet 배포 설계 (소스 비공개, DLL+XML 동봉, 로컬 피드 소비) |
 | `plan/interface_encapsulation_0611.md` | 2026-06-11 | 인터페이스 전용 노출 (Transport 구현체 internal화 + ServerNet 팩토리, v1.1.0) |
 | `plan/mob_combat_0612.md` | 2026-06-12 | 보스 몹 전투 컨텐츠 (DamagePacket·MobHpPacket·MobDeathPacket, MobManager lock-free 설계) |
+| `plan/auth_server_separation_0616.md` | 2026-06-16 | 인증 서버 독립 프로세스 분리 (AuthServer.exe 9200 + Auth 공유 라이브러리 + AuthTokenPacket·RequireAuth 게이팅) |
 
 ---
 

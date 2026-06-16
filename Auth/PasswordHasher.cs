@@ -15,23 +15,23 @@ namespace Server.Auth;
 /// <item><description><b>Memory Allocation:</b> 각 호출마다 해시 결과 byte[32]와 salt byte[16]을 힙에 생성합니다.</description></item>
 /// </list>
 /// </remarks>
-internal static class PasswordHasher
+public static class PasswordHasher
 {
     // PBKDF2 출력 길이(바이트): SHA-256 다이제스트 크기와 일치
-    // internal: LoginService의 더미 hash/salt 배열 크기 선언에 재사용 (매직 리터럴 방지)
-    internal const int HashSize = 32;
+    // public: LoginService의 더미 hash/salt 배열 크기 선언에 재사용 (매직 리터럴 방지)
+    public const int HashSize = 32;
     // Salt 길이(바이트): NIST SP 800-132 권고 최소 16B
-    // internal: LoginService의 더미 salt 배열 크기 선언에 재사용
-    internal const int SaltSize = 16;
+    // public: LoginService의 더미 salt 배열 크기 선언에 재사용
+    public const int SaltSize = 16;
     // 기본 반복 횟수: OWASP 2024 권고(SHA-256 기준 600,000회)에서 데모 목적으로 낮춤.
     // 운영 환경에서는 cfg.Auth.PbkdfIterations로 100,000 이상을 사용하세요.
-    internal const int DefaultIterations = 100_000;
+    public const int DefaultIterations = 100_000;
 
     /// <summary>비밀번호를 PBKDF2-SHA256으로 해시합니다.</summary>
     /// <param name="password">해시할 비밀번호(평문)입니다.</param>
     /// <param name="iterations">PBKDF2 반복 횟수입니다. 기본값 100,000 이상을 권장합니다.</param>
     /// <returns>(Salt 16B, Hash 32B) 튜플입니다.</returns>
-    internal static (byte[] Salt, byte[] Hash) Hash(string password, int iterations = DefaultIterations)
+    public static (byte[] Salt, byte[] Hash) Hash(string password, int iterations = DefaultIterations)
     {
         // RandomNumberGenerator.GetBytes: CSPRNG(암호학적으로 안전한 RNG) — 예측 불가능한 salt 생성.
         // per-user 랜덤 salt로 사전 공격(Rainbow Table)을 차단한다.
@@ -52,7 +52,7 @@ internal static class PasswordHasher
     /// <b>⚠ CPU 집약 연산:</b> PBKDF2 해시 연산(~10–50ms)을 동기적으로 수행합니다.
     /// I/O 스레드에서 호출 시 수신 루프 전체가 정지됩니다. 반드시 <c>Task.Run</c>으로 래핑하세요.
     /// </remarks>
-    internal static bool Verify(string password, byte[] salt, byte[] storedHash, int iterations = DefaultIterations)
+    public static bool Verify(string password, byte[] salt, byte[] storedHash, int iterations = DefaultIterations)
     {
         var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, iterations, HashAlgorithmName.SHA256, HashSize);
         // CryptographicOperations.FixedTimeEquals: 상수 시간 비교로 타이밍 공격(timing side-channel)을 차단.

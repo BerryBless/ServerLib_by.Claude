@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- ServerLib: AuthContext의 XML 주석이 ServerLib.Interface.ISession을 참조 -->
+        <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- MySqlConnector: 비동기 우선 ADO.NET MySQL 드라이버. MySqlConnection per-query 패턴으로 ADO.NET 풀 활용 -->
+        <PackageReference Include="MySqlConnector" Version="2.4.0" />
+        <!-- StackExchange.Redis: ConnectionMultiplexer 기반 Redis 클라이언트. 소수 커넥션에 모든 명령 멀티플렉싱 -->
+        <PackageReference Include="StackExchange.Redis" Version="2.8.16" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Update="schema.sql">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
+
+</Project>
