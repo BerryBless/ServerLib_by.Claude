@@ -77,8 +77,10 @@ internal sealed class MySqlUserStore : IUserStore
     /// <param name="connectionString">MySQL 연결 문자열입니다.</param>
     /// <param name="username">삽입할 사용자 이름입니다.</param>
     /// <param name="password">평문 비밀번호입니다. 내부에서 PBKDF2 해시로 변환됩니다.</param>
+    /// <param name="iterations">PBKDF2 반복 횟수입니다. <b>LoginService에 주입된 값과 반드시 일치</b>해야 합니다.
+    /// 다르면 로그인 검증 시 해시 불일치로 인증이 영구 실패합니다.</param>
     internal static async Task SeedAsync(string connectionString, string username, string password,
-        CancellationToken ct = default)
+        int iterations = PasswordHasher.DefaultIterations, CancellationToken ct = default)
     {
         using var conn = new MySqlConnection(connectionString);
         await conn.OpenAsync(ct);
@@ -90,8 +92,9 @@ internal sealed class MySqlUserStore : IUserStore
         var count = Convert.ToInt64(await checkCmd.ExecuteScalarAsync(ct));
         if (count > 0) return;
 
-        // PBKDF2 해시 생성 — 시드는 저빈도이므로 Task.Run 없이 허용
-        var (salt, hash) = PasswordHasher.Hash(password);
+        // PBKDF2 해시 생성 — iterations는 호출부(Program.cs)가 cfg.Auth.PbkdfIterations를 전달해야 함.
+        // 시드는 저빈도(시작 1회)이므로 Task.Run 없이 허용.
+        var (salt, hash) = PasswordHasher.Hash(password, iterations);
 
         using var insertCmd = conn.CreateCommand();
         insertCmd.CommandText = "INSERT INTO users (username, password_hash, salt) VALUES (@u, @h, @s)";

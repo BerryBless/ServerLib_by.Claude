@@ -31,7 +31,8 @@ if (cfg.Features.EnableLogin)
     if (cfg.Auth.SeedTestUser)
     {
         await MySqlUserStore.EnsureSchemaAsync(cfg.Auth.MySqlConnectionString);
-        await MySqlUserStore.SeedAsync(cfg.Auth.MySqlConnectionString, cfg.Auth.SeedUsername, cfg.Auth.SeedPassword);
+        // cfg.Auth.PbkdfIterations를 함께 전달 — 시드 해시와 검증 해시의 반복수가 달라지면 로그인이 영구 실패함
+        await MySqlUserStore.SeedAsync(cfg.Auth.MySqlConnectionString, cfg.Auth.SeedUsername, cfg.Auth.SeedPassword, cfg.Auth.PbkdfIterations);
     }
     loginService = new LoginService(
         new MySqlUserStore(cfg.Auth.MySqlConnectionString),

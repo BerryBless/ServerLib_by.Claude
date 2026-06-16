@@ -24,6 +24,12 @@ internal sealed class LoginService
     private readonly TimeSpan _tokenTtl;
     private readonly int _pbkdfIterations;
 
+    // CWE-208 타이밍 열거 방어: 존재하지 않는 사용자에 대해서도 동일한 PBKDF2 비용을 소비해
+    // "사용자 존재" vs "비밀번호 불일치"를 응답 지연으로 구분할 수 없게 한다.
+    // 제로-초기화된 더미 salt/hash — Verify는 항상 false를 반환하지만 동일한 CPU 시간이 소요된다.
+    private static readonly byte[] DummySalt = new byte[PasswordHasher.SaltSize];
+    private static readonly byte[] DummyHash = new byte[PasswordHasher.HashSize];
+
     internal LoginService(IUserStore userStore, ITokenStore tokenStore, TimeSpan tokenTtl, int pbkdfIterations)
     {
         _userStore       = userStore;
@@ -39,10 +45,15 @@ internal sealed class LoginService
     /// <returns>로그인 결과입니다. 실패 시 <see cref="LoginResult.Success"/>가 false이며 Token이 빈 문자열입니다.</returns>
     internal async Task<LoginResult> LoginAsync(string username, string password, CancellationToken ct = default)
     {
-        // ① MySQL 사용자 조회 — 존재하지 않으면 즉시 실패(힙 할당 최소화)
+        // ① MySQL 사용자 조회
         var user = await _userStore.FindByUsernameAsync(username, ct);
         if (user is null)
+        {
+            // CWE-208 방어: 사용자가 없더라도 더미 PBKDF2를 동일 반복수로 수행해 응답 지연을 균일화.
+            // 즉시 반환하면 "아이디 존재" 여부가 타이밍으로 노출된다 — 사용자 열거 공격에 악용됨.
+            await Task.Run(() => PasswordHasher.Verify(password, DummySalt, DummyHash, _pbkdfIterations), ct);
             return new LoginResult(false);
+        }
 
         // ② PBKDF2 검증: CPU 집약(~10–50ms) → Task.Run으로 스레드풀에 위임하여 I/O 스레드를 해제
         // 캡처: salt·storedHash·iterations만 캡처(string password는 이미 힙 참조)

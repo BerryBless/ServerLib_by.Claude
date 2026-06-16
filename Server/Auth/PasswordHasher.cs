@@ -18,9 +18,11 @@ namespace Server.Auth;
 internal static class PasswordHasher
 {
     // PBKDF2 출력 길이(바이트): SHA-256 다이제스트 크기와 일치
-    private const int HashSize = 32;
+    // internal: LoginService의 더미 hash/salt 배열 크기 선언에 재사용 (매직 리터럴 방지)
+    internal const int HashSize = 32;
     // Salt 길이(바이트): NIST SP 800-132 권고 최소 16B
-    private const int SaltSize = 16;
+    // internal: LoginService의 더미 salt 배열 크기 선언에 재사용
+    internal const int SaltSize = 16;
     // 기본 반복 횟수: OWASP 2024 권고(SHA-256 기준 600,000회)에서 데모 목적으로 낮춤.
     // 운영 환경에서는 cfg.Auth.PbkdfIterations로 100,000 이상을 사용하세요.
     internal const int DefaultIterations = 100_000;
