@@ -198,17 +198,17 @@ listener.OnReceived = async (session, data) =>
         // AuthTokenPacket(Id=12): 클라이언트가 AuthServer에서 발급받은 토큰을 게임 서버에 제시.
         // Redis에서 토큰 존재·유효성을 검증(1 RTT) — 유효하면 세션을 Authenticated 상태로 전이.
         var tok = serializer.Deserialize<AuthTokenPacket>(data.Span);
-        // TryGetUserIdAsync: Redis GET 1 RTT — Non-blocking(StackExchange.Redis 파이프라이닝)
-        var userId = await tokenStore.TryGetUserIdAsync(tok.Token);
-        bool ok = userId is not null;
+        // TryResolveAsync: Redis GET 1 RTT — userId·username 동시 복원(Non-blocking, StackExchange.Redis 파이프라이닝)
+        var info = await tokenStore.TryResolveAsync(tok.Token);
+        bool ok = info is not null;
         // LoginResponsePacket 재사용: 별도 ack 패킷 불필요 — 클라이언트 OnReceived의 기존 분기 재사용
         await session.SendAsync(new LoginResponsePacket { Success = ok, Token = ok ? tok.Token : string.Empty });
         if (ok)
         {
             session.TransitionTo(SessionState.Authenticated);
-            // AuthContext.Username: 토큰만으로는 사용자명 조회 불가 → 빈 문자열(차기 정교화 포인트)
-            session.Context = new AuthContext(userId!.Value, string.Empty, tok.Token);
-            Console.WriteLine($"[GATE+] {session.RemoteEndPoint}  토큰 검증 성공  userId={userId}  token={tok.Token[..Math.Min(8, tok.Token.Length)]}...");
+            // AuthContext: TryResolveAsync가 userId·username 모두 복원 → Username 빈 문자열 없음
+            session.Context = new AuthContext(info!.Value.UserId, info.Value.Username, tok.Token);
+            Console.WriteLine($"[GATE+] {session.RemoteEndPoint}  토큰 검증 성공  user={info.Value.Username}  userId={info.Value.UserId}  token={tok.Token[..Math.Min(8, tok.Token.Length)]}...");
         }
         else
         {

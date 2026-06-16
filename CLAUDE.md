@@ -71,6 +71,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/interface_encapsulation_0611.md` | 2026-06-11 | 인터페이스 전용 노출 (Transport 구현체 internal화 + ServerNet 팩토리, v1.1.0) |
 | `plan/mob_combat_0612.md` | 2026-06-12 | 보스 몹 전투 컨텐츠 (DamagePacket·MobHpPacket·MobDeathPacket, MobManager lock-free 설계) |
 | `plan/auth_server_separation_0616.md` | 2026-06-16 | 인증 서버 독립 프로세스 분리 (AuthServer.exe 9200 + Auth 공유 라이브러리 + AuthTokenPacket·RequireAuth 게이팅) |
+| `plan/token_username_recovery_0617.md` | 2026-06-17 | 토큰 게이팅 시 Username 복원 (ITokenStore.TryResolveAsync·TokenInfo, Redis delimited String, AuthContext.Username 완성) |
 
 ---
 

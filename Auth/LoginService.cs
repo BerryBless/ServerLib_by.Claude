@@ -76,8 +76,8 @@ public sealed class LoginService
             .Replace("/", "_")  // base64url: '/' → '_'
             .TrimEnd('=');      // padding 제거
 
-        // ④ Redis 토큰 저장(TTL 첨부)
-        await _tokenStore.StoreAsync(token, user.Id, _tokenTtl, ct);
+        // ④ Redis 토큰 저장(TTL 첨부): userId·username을 함께 저장해 게이팅 경로에서 AuthContext.Username 복원 가능하게 함
+        await _tokenStore.StoreAsync(token, user.Id, user.Username, _tokenTtl, ct);
 
         return new LoginResult(true, user.Id, user.Username, token);
     }

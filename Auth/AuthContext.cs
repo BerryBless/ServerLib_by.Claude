@@ -4,7 +4,7 @@ namespace Server.Auth;
 /// 로그인 성공 후 세션(<see cref="ServerLib.Interface.ISession.Context"/>)에 부착되는 인증 컨텍스트입니다.
 /// </summary>
 /// <param name="UserId">인증된 사용자의 데이터베이스 ID입니다.</param>
-/// <param name="Username">인증된 사용자 이름입니다. AuthTokenPacket 검증 경로에서는 빈 문자열일 수 있습니다.</param>
+/// <param name="Username">인증된 사용자 이름입니다. 로그인 직접 경로와 AuthTokenPacket 게이팅 경로 모두 올바른 값이 채워집니다.</param>
 /// <param name="Token">Redis에 저장된 세션 토큰입니다.</param>
 /// <remarks>
 /// <b>[사용 패턴]</b>

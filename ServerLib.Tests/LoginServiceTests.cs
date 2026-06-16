@@ -103,19 +103,19 @@ file sealed class FakeUserStore : IUserStore
 /// <summary>인메모리 페이크 토큰 저장소 — 저장 호출 기록 및 조회 검증용.</summary>
 file sealed class FakeTokenStore : ITokenStore
 {
-    public List<(string Token, long UserId, TimeSpan Ttl)> Stored { get; } = [];
+    public List<(string Token, long UserId, string Username, TimeSpan Ttl)> Stored { get; } = [];
 
-    public Task StoreAsync(string token, long userId, TimeSpan ttl, CancellationToken ct = default)
+    public Task StoreAsync(string token, long userId, string username, TimeSpan ttl, CancellationToken ct = default)
     {
-        Stored.Add((token, userId, ttl));
+        Stored.Add((token, userId, username, ttl));
         return Task.CompletedTask;
     }
 
-    // TryGetUserIdAsync: ITokenStore 인터페이스 확장 — Stored 목록에서 토큰 매칭(테스트용, TTL 무시)
-    public Task<long?> TryGetUserIdAsync(string token, CancellationToken ct = default)
+    // TryResolveAsync: ITokenStore 인터페이스 — Stored 목록에서 토큰 매칭 후 TokenInfo(UserId·Username) 반환(테스트용, TTL 무시)
+    public Task<TokenInfo?> TryResolveAsync(string token, CancellationToken ct = default)
     {
         var match = Stored.Find(s => s.Token == token);
-        long? result = match.Token != null ? match.UserId : null;
+        TokenInfo? result = match.Token != null ? new TokenInfo(match.UserId, match.Username) : null;
         return Task.FromResult(result);
     }
 }
@@ -160,11 +160,12 @@ public class LoginServiceTests
         // Act
         var result = await svc.LoginAsync("bob", "secret");
 
-        // Assert: 토큰이 ITokenStore.StoreAsync로 전달되었는지 확인
+        // Assert: 토큰·userId·username·TTL 모두 ITokenStore.StoreAsync로 전달되었는지 확인
         Assert.Single(tokenStore.Stored);
-        var (storedToken, storedUserId, storedTtl) = tokenStore.Stored[0];
+        var (storedToken, storedUserId, storedUsername, storedTtl) = tokenStore.Stored[0];
         Assert.Equal(result.Token, storedToken);
         Assert.Equal(2L, storedUserId);
+        Assert.Equal("bob", storedUsername);
         Assert.Equal(ttl, storedTtl);
     }
 
@@ -239,6 +240,25 @@ public class LoginServiceTests
     }
 
     // ── 동시성·멱등성 ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task LoginAsync_ValidCredentials_TokenStorePreservesUsername()
+    {
+        // Arrange: store→resolve 라운드트립에서 username이 손실되지 않는지 검증 (토큰 게이팅 Username 복원 핵심)
+        var store = new FakeUserStore();
+        store.Add(10, "alice_gate", "pass", iterations: 1_000);
+        var tokenStore = new FakeTokenStore();
+        var svc = BuildService(store, tokenStore);
+
+        // Act: 로그인 → 토큰 발급 후 TryResolveAsync로 역조회
+        var result = await svc.LoginAsync("alice_gate", "pass");
+        var info = await tokenStore.TryResolveAsync(result.Token);
+
+        // Assert: UserId·Username 모두 올바르게 복원
+        Assert.NotNull(info);
+        Assert.Equal(10L, info!.Value.UserId);
+        Assert.Equal("alice_gate", info.Value.Username);
+    }
 
     [Fact]
     public async Task LoginAsync_SameCreds_TwiceConcurrently_BothSucceed()
