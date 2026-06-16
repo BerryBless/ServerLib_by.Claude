@@ -83,7 +83,7 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
             return ValueTask.CompletedTask;
         };
 
-        // OnReceived: 서버→클라 방향 MobHpPacket / MobDeathPacket 처리.
+        // OnReceived: 서버→클라 방향 MobHpPacket / MobDeathPacket / LoginResponsePacket 처리.
         // T0만 HP 바를 출력해 콘솔 스팸 방지 — 사망 패킷은 모든 스레드가 출력(저빈도).
         conn.OnReceived = data =>
         {
@@ -105,11 +105,27 @@ var tasks = Enumerable.Range(0, threadCount).Select(async i =>
                 var death = serializer.Deserialize<MobDeathPacket>(data.Span);
                 Console.WriteLine($"  [처치] T{i}  gen={death.Generation}  MVP={death.MvpName}  topDmg={death.TopDamage:N0}");
             }
+            else if (pktId == LoginResponsePacket.Id && i == 0)
+            {
+                // T0만 로그인 결과 출력 — 스탠드얼론 설계: 결과와 무관하게 공격 루프 계속 진행
+                var resp = serializer.Deserialize<LoginResponsePacket>(data.Span);
+                var mark = resp.Success ? "✓" : "✗";
+                var tokenSnip = resp.Success && resp.Token.Length >= 8 ? resp.Token[..8] + "..." : "(없음)";
+                Console.WriteLine($"  [LOGIN] T0 {mark}  token={tokenSnip}");
+            }
 
             return ValueTask.CompletedTask;
         };
 
         await conn.ConnectAsync(Host, Port, ct);
+
+        // 로그인 prelude: T0가 공격 루프 시작 전 LoginRequestPacket 1회 전송(스탠드얼론 — 결과와 무관하게 공격 계속)
+        if (i == 0 && cfg.Features.EnableLogin)
+        {
+            var loginPkt = new LoginRequestPacket { Username = cfg.Login.Username, Password = cfg.Login.Password };
+            await conn.SendAsync(loginPkt, ct);
+            Console.WriteLine($"  [LOGIN] T0 로그인 요청 전송  user={cfg.Login.Username}");
+        }
 
         if (i == 0 && cfg.Features.EnableRttDisplay)
         {

@@ -15,5 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
+    <!-- Server 프로젝트 참조: Server.Auth.* 내부 클래스(InternalsVisibleTo)를 단위 테스트하기 위해 필요 -->
+    <ProjectReference Include="..\Server\Server.csproj" />
   </ItemGroup>
 </Project>

@@ -29,6 +29,9 @@ public sealed class ServerConfig
     public int MaxConnectionsPerIp { get; set; } = 0;
 
     public ServerFeatures Features { get; set; } = new();
+
+    /// <summary>로그인·인증 관련 설정입니다. Features.EnableLogin이 true일 때 사용됩니다.</summary>
+    public AuthConfig Auth { get; set; } = new();
 }
 
 /// <summary>서버 기능 on/off 토글.</summary>
@@ -37,4 +40,41 @@ public sealed class ServerFeatures
     public bool EnableSessionRegistry { get; set; } = true;
     public bool EnableMetrics { get; set; } = true;
     public bool EnableIdleTimeout { get; set; } = true;
+
+    /// <summary>
+    /// MySQL+Redis 기반 로그인 기능 활성화 여부입니다.
+    /// false이면 LoginRequestPacket(Id=10)을 무시하고 기존 게임 흐름에 영향을 주지 않습니다.
+    /// </summary>
+    public bool EnableLogin { get; set; } = false;
+}
+
+/// <summary>
+/// 로그인·인증 관련 설정입니다. appsettings.json의 "Server.Auth" 섹션에 바인딩됩니다.
+/// </summary>
+public sealed class AuthConfig
+{
+    /// <summary>MySQL 연결 문자열입니다. schema.sql의 gamedb 데이터베이스를 가리켜야 합니다.</summary>
+    public string MySqlConnectionString { get; set; } =
+        "Server=127.0.0.1;Port=3306;Database=gamedb;User ID=root;Password=password;";
+
+    /// <summary>StackExchange.Redis 연결 문자열입니다.</summary>
+    public string RedisConnectionString { get; set; } = "127.0.0.1:6379";
+
+    /// <summary>세션 토큰 유효 기간(초)입니다. 기본 1시간.</summary>
+    public int TokenTtlSeconds { get; set; } = 3600;
+
+    /// <summary>PBKDF2 반복 횟수입니다. 100,000 이상을 권장합니다.</summary>
+    public int PbkdfIterations { get; set; } = 100_000;
+
+    /// <summary>
+    /// true이면 서버 시작 시 테스트 사용자(SeedUsername/SeedPassword)를 MySQL에 삽입합니다.
+    /// 최초 1회 사용 후 반드시 false로 되돌리세요.
+    /// </summary>
+    public bool SeedTestUser { get; set; } = false;
+
+    /// <summary>시드 사용자 이름입니다.</summary>
+    public string SeedUsername { get; set; } = "admin";
+
+    /// <summary>시드 사용자 비밀번호(평문)입니다. 서버가 PBKDF2 해시로 변환하여 저장합니다.</summary>
+    public string SeedPassword { get; set; } = "password123";
 }

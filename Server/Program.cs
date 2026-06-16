@@ -1,12 +1,14 @@
 using System.Buffers;
 using AppConfig;
 using Microsoft.Extensions.Configuration;
+using Server.Auth;                             // LoginService, MySqlUserStore, RedisTokenStore, AuthContext
 using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 인터페이스로 리스너·레지스트리 생성
 using ServerLib.Core;                         // ServerMetrics, GetContext<T>() 확장(public 빌딩블록)
 using ServerLib.Core.Memory;                  // PacketPool: 헤더 파싱 유틸(public 빌딩블록)
 using ServerLib.Core.Serialization;           // BinaryPacketSerializer / PacketSendExtensions
-using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket
-using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry
+using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket / LoginRequestPacket / LoginResponsePacket
+using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry / SessionState
+using StackExchange.Redis;                     // ConnectionMultiplexer
 using System.Diagnostics;                      // Process / ProcessThread / PerformanceCounter (Windows 전용)
 using System.Text.Json;                        // JsonSerializer — volatile JSON 스냅샷 직렬화
 
@@ -17,6 +19,27 @@ var config = new ConfigurationBuilder()
     .AddCommandLine(args)
     .Build();
 var cfg = config.GetSection("Server").Get<ServerConfig>() ?? new ServerConfig();
+
+// ConnectionMultiplexer: StackExchange.Redis 내부에서 소수의 물리 TCP 소켓에 모든 Redis 명령을 멀티플렉싱.
+// 생성 비용이 크고(DNS 해석 + TCP 연결 협상) 장수명 객체이므로 프로세스당 싱글톤 1개만 유지한다.
+// 프로세스 종료 시 Dispose()로 명시적 해제 필수.
+ConnectionMultiplexer? redis = null;
+LoginService? loginService = null;
+if (cfg.Features.EnableLogin)
+{
+    redis = ConnectionMultiplexer.Connect(cfg.Auth.RedisConnectionString);
+    if (cfg.Auth.SeedTestUser)
+    {
+        await MySqlUserStore.EnsureSchemaAsync(cfg.Auth.MySqlConnectionString);
+        await MySqlUserStore.SeedAsync(cfg.Auth.MySqlConnectionString, cfg.Auth.SeedUsername, cfg.Auth.SeedPassword);
+    }
+    loginService = new LoginService(
+        new MySqlUserStore(cfg.Auth.MySqlConnectionString),
+        new RedisTokenStore(redis),
+        TimeSpan.FromSeconds(cfg.Auth.TokenTtlSeconds),
+        cfg.Auth.PbkdfIterations);
+    Console.WriteLine($"[Login] 인증 모듈 초기화 완료 (MySQL+Redis)  tokenTtl={cfg.Auth.TokenTtlSeconds}s  pbkdf={cfg.Auth.PbkdfIterations}iter");
+}
 
 // ISessionRegistry: 브로드캐스트(BroadcastAsync)는 레지스트리 없이 불가 → 게임 컨텐츠에서 필수.
 // cfg.Features.EnableSessionRegistry 토글과 무관하게 항상 생성한다.
@@ -109,10 +132,12 @@ listener.OnClientError = (session, ex) =>
     return ValueTask.CompletedTask;
 };
 
-listener.OnReceived = (session, data) =>
+// async 람다: LoginRequestPacket 처리(DB/Redis await)를 위해 async로 선언.
+// DamagePacket(핫패스)은 동기 처리 → 비동기 오버헤드 없음. await가 없는 분기는 즉시 완료 ValueTask 반환.
+listener.OnReceived = async (session, data) =>
 {
     if (!PacketPool.TryParseHeader(data.Span, out ushort packetId, out _))
-        return ValueTask.CompletedTask;
+        return;
 
     metrics?.OnPacketReceived();
     Interlocked.Increment(ref totalReceived);
@@ -125,8 +150,29 @@ listener.OnReceived = (session, data) =>
         var label = session.GetContext<GameContext>()?.Nickname ?? session.RemoteEndPoint?.ToString() ?? "?";
         mob.ApplyDamage(session.SessionId, label, pkt.Amount);
     }
+    else if (packetId == LoginRequestPacket.Id && loginService is not null)
+    {
+        // LoginRequestPacket 처리: 저빈도(세션당 1회) — DB+Redis I/O + Task.Run(PBKDF2) 포함
+        // Task.Run 내부에서 CPU 집약 해시 검증을 스레드풀에 위임하므로 이 I/O 스레드는 블로킹되지 않음
+        var req = serializer.Deserialize<LoginRequestPacket>(data.Span);
+        var result = await loginService.LoginAsync(req.Username, req.Password);
 
-    return ValueTask.CompletedTask;
+        var resp = new LoginResponsePacket { Success = result.Success, Token = result.Token };
+        await session.SendAsync(resp);
+
+        if (result.Success)
+        {
+            // SessionState.Authenticated: 소비자 설정 가능한 상태(값=2) — 로그인 성공 후 전이
+            session.TransitionTo(SessionState.Authenticated);
+            // AuthContext: 이후 GetContext<AuthContext>()로 인증 정보 조회 가능
+            session.Context = new AuthContext(result.UserId, result.Username, result.Token);
+            Console.WriteLine($"[AUTH+] {session.RemoteEndPoint}  user={result.Username}  token={result.Token[..Math.Min(8, result.Token.Length)]}...");
+        }
+        else
+        {
+            Console.WriteLine($"[AUTH-] {session.RemoteEndPoint}  user={req.Username}  로그인 실패");
+        }
+    }
 };
 
 if (cfg.Features.EnableIdleTimeout)
@@ -157,7 +203,7 @@ listener.Start(cfg.Port);
 adminListener.Start(cfg.AdminPort);
 Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
 Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
-Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout}");
+Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} login={cfg.Features.EnableLogin}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 // 주기 HP 브로드캐스트 Task: 200ms마다 전체 클라에 현재 HP 전송.
@@ -313,6 +359,8 @@ while (true)
 cts.Cancel();
 listener.Stop();
 adminListener.Stop();
+// ConnectionMultiplexer: 소수 TCP 소켓의 명시적 해제 — Dispose 없으면 GC가 처리하지만 지연될 수 있음
+redis?.Dispose();
 
 var (finalHp, _, finalGen) = mob.Snapshot();
 Console.WriteLine($"종료  total={metrics?.TotalPacketsReceived ?? 0}  final hp={finalHp}  gen={finalGen}");
