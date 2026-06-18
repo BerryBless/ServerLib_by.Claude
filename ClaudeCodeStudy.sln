@@ -18,6 +18,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Auth", "Auth\Auth.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AuthServer", "AuthServer\AuthServer.csproj", "{F8D5A634-2B3C-5E4F-9A0B-1C2D3E4F5061}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ticketing", "Ticketing\Ticketing.csproj", "{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -136,6 +138,18 @@ Global
 		{F8D5A634-2B3C-5E4F-9A0B-1C2D3E4F5061}.Release|x64.Build.0 = Release|Any CPU
 		{F8D5A634-2B3C-5E4F-9A0B-1C2D3E4F5061}.Release|x86.ActiveCfg = Release|Any CPU
 		{F8D5A634-2B3C-5E4F-9A0B-1C2D3E4F5061}.Release|x86.Build.0 = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|x64.Build.0 = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Debug|x86.Build.0 = Debug|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|x64.ActiveCfg = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|x64.Build.0 = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|x86.ActiveCfg = Release|Any CPU
+		{C6ECEFE5-10C8-482B-9A4D-694117BC7E2B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

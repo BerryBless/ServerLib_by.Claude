@@ -32,6 +32,9 @@ public sealed class ServerConfig
 
     /// <summary>로그인·인증 관련 설정입니다. Features.EnableLogin이 true일 때 사용됩니다.</summary>
     public AuthConfig Auth { get; set; } = new();
+
+    /// <summary>티켓팅 관련 설정입니다. Features.EnableTicketing이 true일 때 사용됩니다.</summary>
+    public TicketConfig Ticket { get; set; } = new();
 }
 
 /// <summary>서버 기능 on/off 토글.</summary>
@@ -54,6 +57,33 @@ public sealed class ServerFeatures
     /// false(기본)이면 기존 보스몹 데모가 인증 없이 그대로 동작합니다.
     /// </summary>
     public bool RequireAuth { get; set; } = false;
+
+    /// <summary>
+    /// 선착순 티켓팅 데모 활성화 여부입니다.
+    /// true이면 <c>LoginRequestPacket</c>을 더미 로그인으로 처리하고 티켓 예약·결제 패킷을 활성화합니다.
+    /// <c>EnableLogin=false</c> (기본값)인 상태에서만 의미가 있습니다 — 두 모드가 동시에 활성화되면
+    /// 실제 LoginService가 우선하여 더미 로그인 분기가 실행되지 않습니다.
+    /// </summary>
+    public bool EnableTicketing { get; set; } = false;
+}
+
+/// <summary>
+/// 티켓팅 관련 설정입니다. appsettings.json의 "Server.Ticket" 섹션에 바인딩됩니다.
+/// <c>ServerFeatures.EnableTicketing</c>이 <see langword="true"/>일 때 사용됩니다.
+/// </summary>
+public sealed class TicketConfig
+{
+    /// <summary>전체 티켓(슬롯) 수입니다. 기본 3개.</summary>
+    public int TotalTickets { get; set; } = 3;
+
+    /// <summary>결제 시뮬레이션 지연(밀리초)입니다. 기본 300ms.</summary>
+    public int PaymentDelayMs { get; set; } = 300;
+
+    /// <summary>더미 결제 주변 실패율(0.0~1.0)입니다. 기본 0(항상 성공).</summary>
+    public double PaymentFailureRate { get; set; } = 0.0;
+
+    /// <summary>예약 후 결제하지 않으면 자동 반납되는 TTL(초)입니다. 기본 30초.</summary>
+    public int ReservationTtlSeconds { get; set; } = 30;
 }
 
 /// <summary>

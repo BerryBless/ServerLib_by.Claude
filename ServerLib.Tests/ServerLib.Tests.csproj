@@ -17,5 +17,7 @@
     <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
     <!-- Auth: Server.Auth.* 공개 타입(LoginService·PasswordHasher 등)을 단위 테스트 -->
     <ProjectReference Include="..\Auth\Auth.csproj" />
+    <!-- Ticketing: TicketInventory 동시성·TicketResultPacket 라운드트립 단위 테스트 -->
+    <ProjectReference Include="..\Ticketing\Ticketing.csproj" />
   </ItemGroup>
 </Project>

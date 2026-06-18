@@ -1,11 +1,12 @@
 using System.Buffers;
 using System.Diagnostics; // Stopwatch.GetTimestamp: 측정 윈도의 경과 시간(처리량 산출용) — DateTime보다 저오버헤드 고해상도 타임스탬프
+using System.Threading.Channels; // Channel<T>: 락-프리 MPSC 큐로 OnReceived → 데모 루프 비동기 전달
 using AppConfig;
 using Microsoft.Extensions.Configuration;
 using ServerLib;                              // ServerNet 팩토리: 구현체(internal) 대신 IClientConnection 생성
 using ServerLib.Core.Memory;                  // PacketPool: 헤더 크기·파싱 유틸(public 빌딩블록)
 using ServerLib.Core.Serialization;           // BinaryPacketSerializer / IPacketSerializer(public)
-using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket
+using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket / Ticket*
 using ServerLib.Interface;                     // IClientConnection
 
 var config = new ConfigurationBuilder()
@@ -41,6 +42,13 @@ Console.CancelKeyPress += (_, e) =>
 
 // BinaryPacketSerializer: 내부 상태 없음(Thread-safe) — 모든 공격 스레드에서 공유 가능
 var serializer = new BinaryPacketSerializer();
+
+// 티켓팅 데모 모드: 공격 루프 대신 선착순 예약·결제 흐름을 시연하고 즉시 반환
+if (cfg.Features.EnableTicketing)
+{
+    await RunTicketingDemoAsync(cfg, serializer, cts.Token);
+    return;
+}
 
 string modeDesc = sendCount is null
     ? "무한 루프 (Ctrl+C로 종료)"
@@ -226,3 +234,140 @@ Console.WriteLine("모든 스레드 종료.");
 Console.WriteLine($"[CLIENTSTATS] sent={grandTotal} allocBytes={allocDelta} bytesPerPacket={bytesPerPacket:F2} " +
                   $"gen0={GC.CollectionCount(0) - gen0Start} gen1={GC.CollectionCount(1) - gen1Start} gen2={GC.CollectionCount(2) - gen2Start} " +
                   $"elapsedMs={elapsedMs:F0} pktPerSec={(elapsedMs > 0 ? grandTotal / (elapsedMs / 1000.0) : 0):F0}");
+
+// ──────────── 티켓팅 데모 로컬 함수 ────────────
+static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer serializer, CancellationToken ct)
+{
+    int clientCount = cfg.Ticketing.ClientCount;
+    int failingIdx  = cfg.Ticketing.FailingClientIndex;
+    int headStartMs = cfg.Ticketing.FailerHeadStartMs;
+
+    Console.WriteLine($"\n[TICKET] 티켓팅 데모 시작 — 클라이언트={clientCount}  실패클라={failingIdx}  headStart={headStartMs}ms");
+
+    int confirmed = 0, soldOut = 0, failed = 0;
+
+    async Task RunClient(int i)
+    {
+        bool isFailer = (i == failingIdx);
+        string username = $"user{i}";
+
+        // Channel<byte[]>: 락-프리 큐로 OnReceived 콜백에서 복사한 패킷을 순서대로 버퍼링.
+        // UnboundedChannel: 서버 응답 누적이 ~10패킷 이하이므로 백프레셔 불필요
+        var inbox = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+
+        await using var conn = ServerNet.CreateClient();
+        if (cfg.SendTimeoutSeconds > 0)
+            conn.SendTimeout = TimeSpan.FromSeconds(cfg.SendTimeoutSeconds);
+
+        conn.OnReceived = data =>
+        {
+            // data.Span은 콜백 반환 후 Pipe 내부 버퍼가 재사용되면 무효 → 즉시 byte[]로 복사 후 채널에 쓰기
+            inbox.Writer.TryWrite(data.Span.ToArray());
+            return ValueTask.CompletedTask;
+        };
+        conn.OnDisconnected = () =>
+        {
+            inbox.Writer.TryComplete(); // 채널 완료 → 대기 중인 ReadAsync가 OperationCanceledException 발생
+            return ValueTask.CompletedTask;
+        };
+
+        // 10초 타임아웃으로 다음 패킷 읽기 — 서버 무응답 시 데모가 영구 대기하는 것을 방지
+        async ValueTask<byte[]> ReadNextAsync()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var linked  = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            return await inbox.Reader.ReadAsync(linked.Token);
+        }
+
+        try
+        {
+            await conn.ConnectAsync(cfg.Host, cfg.Port, ct);
+            Console.WriteLine($"  [{i}] 접속{(isFailer ? " (failer)" : "")}  user={username}");
+
+            // ① 더미 로그인: 비번 없이 아이디만 전송
+            await conn.SendAsync(new LoginRequestPacket { Username = username, Password = string.Empty }, ct);
+            var loginRaw  = await ReadNextAsync();
+            if (!PacketPool.TryParseHeader(loginRaw, out ushort loginPktId, out _) || loginPktId != LoginResponsePacket.Id)
+            {
+                Console.WriteLine($"  [{i}] 예상치 못한 로그인 응답 — 종료");
+                return;
+            }
+            var loginResp = serializer.Deserialize<LoginResponsePacket>(loginRaw);
+            if (!loginResp.Success) { Console.WriteLine($"  [{i}] 로그인 실패"); return; }
+            Console.WriteLine($"  [{i}] 로그인 성공");
+
+            // ② 예약 요청
+            await conn.SendAsync(new TicketReserveRequestPacket(), ct);
+            var resRaw    = await ReadNextAsync();
+            var resResult = serializer.Deserialize<TicketResultPacket>(resRaw);
+            Console.WriteLine($"  [{i}] 예약={resResult.Status}  slot={resResult.Slot}  remaining={resResult.Remaining}");
+
+            if (resResult.Status != TicketStatus.Reserved)
+            {
+                Interlocked.Increment(ref soldOut);
+                return;
+            }
+
+            // ③ 결제 요청 (failer는 의도적 실패)
+            await conn.SendAsync(new TicketPayRequestPacket { SimulateFailure = isFailer }, ct);
+            var payRaw    = await ReadNextAsync();
+            var payResult = serializer.Deserialize<TicketResultPacket>(payRaw);
+            Console.WriteLine($"  [{i}] 결제={payResult.Status}  slot={payResult.Slot}  remaining={payResult.Remaining}");
+
+            if (payResult.Status == TicketStatus.Confirmed)
+            {
+                Interlocked.Increment(ref confirmed);
+                return;
+            }
+
+            if (payResult.Status == TicketStatus.PaymentFailed && isFailer)
+            {
+                // ④ Failer 재예약: 슬롯이 방금 반납됐으므로 즉시 재시도
+                Console.WriteLine($"  [{i}] 결제 실패(의도적) — 슬롯 반납됨, 재예약 시도");
+                await conn.SendAsync(new TicketReserveRequestPacket(), ct);
+                var retryResRaw = await ReadNextAsync();
+                var retryRes    = serializer.Deserialize<TicketResultPacket>(retryResRaw);
+                Console.WriteLine($"  [{i}] 재예약={retryRes.Status}  slot={retryRes.Slot}  remaining={retryRes.Remaining}");
+
+                if (retryRes.Status == TicketStatus.Reserved)
+                {
+                    // ⑤ Failer 재결제
+                    await conn.SendAsync(new TicketPayRequestPacket { SimulateFailure = false }, ct);
+                    var retryPayRaw = await ReadNextAsync();
+                    var retryPay    = serializer.Deserialize<TicketResultPacket>(retryPayRaw);
+                    Console.WriteLine($"  [{i}] 재결제={retryPay.Status}  slot={retryPay.Slot}  ← Failer 최종");
+                    if (retryPay.Status == TicketStatus.Confirmed)
+                        Interlocked.Increment(ref confirmed);
+                    else
+                        Interlocked.Increment(ref failed);
+                }
+                else
+                {
+                    Console.WriteLine($"  [{i}] 재예약 실패({retryRes.Status}) — 슬롯 이미 소진");
+                    Interlocked.Increment(ref soldOut);
+                }
+            }
+            else
+            {
+                Interlocked.Increment(ref failed);
+            }
+        }
+        catch (OperationCanceledException) { Console.WriteLine($"  [{i}] 타임아웃 또는 취소"); }
+        catch (Exception ex) { Console.WriteLine($"  [{i}] 오류: {ex.GetType().Name}: {ex.Message}"); }
+    }
+
+    // Failer에게 headStartMs만큼 선행 접속·예약 기회를 준다 → 슬롯 획득 보장
+    var failerTask = RunClient(failingIdx);
+    try { await Task.Delay(headStartMs, ct); } catch (OperationCanceledException) { }
+
+    // 나머지 클라이언트 동시 실행
+    var otherTasks = Enumerable.Range(0, clientCount)
+        .Where(i => i != failingIdx)
+        .Select(i => RunClient(i))
+        .ToArray();
+
+    await Task.WhenAll(otherTasks.Append(failerTask));
+
+    Console.WriteLine($"\n[TICKET] 최종 결과 — Confirmed={confirmed}  SoldOut={soldOut}  Failed={failed}");
+    Console.WriteLine($"[TICKET] 불변식: Confirmed({confirmed}) == min(ClientCount({clientCount}), TotalTickets)");
+}

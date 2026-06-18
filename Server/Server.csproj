@@ -12,6 +12,8 @@
         <ProjectReference Include="..\AppConfig\AppConfig.csproj" />
         <!-- Auth: 공유 인증 라이브러리(LoginService·MySqlUserStore·RedisTokenStore 등) -->
         <ProjectReference Include="..\Auth\Auth.csproj" />
+        <!-- Ticketing: 선착순 티켓팅 라이브러리(TicketInventory·DummyPaymentGateway·TicketContext) -->
+        <ProjectReference Include="..\Ticketing\Ticketing.csproj" />
     </ItemGroup>
 
     <ItemGroup>

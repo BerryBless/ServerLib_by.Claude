@@ -6,11 +6,12 @@ using ServerLib;                              // ServerNet 팩토리: 구현체(
 using ServerLib.Core;                         // ServerMetrics, GetContext<T>() 확장(public 빌딩블록)
 using ServerLib.Core.Memory;                  // PacketPool: 헤더 파싱 유틸(public 빌딩블록)
 using ServerLib.Core.Serialization;           // BinaryPacketSerializer / PacketSendExtensions
-using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket / LoginRequestPacket / LoginResponsePacket
+using ServerLib.Core.Serialization.Packets;   // DamagePacket / MobHpPacket / MobDeathPacket / LoginRequestPacket / LoginResponsePacket / Ticket*
 using ServerLib.Interface;                     // IServerListener / ISession / ISessionRegistry / SessionState
 using StackExchange.Redis;                     // ConnectionMultiplexer
 using System.Diagnostics;                      // Process / ProcessThread / PerformanceCounter (Windows 전용)
 using System.Text.Json;                        // JsonSerializer — volatile JSON 스냅샷 직렬화
+using Ticketing;                               // TicketInventory, DummyPaymentGateway, TicketContext
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -29,6 +30,18 @@ RedisTokenStore? tokenStore = null;
 LoginService? loginService = null;
 // EnableLogin: 게임 서버 자체 로그인 기능. RequireAuth: Redis 토큰 게이팅(AuthServer 연계).
 // 두 기능 중 하나라도 활성화이면 Redis 연결 필요.
+// EnableTicketing: 더미 로그인+선착순 티켓 — loginService·tokenStore와 무관하게 별도 초기화.
+TicketInventory? ticketInventory = null;
+IDummyPaymentGateway? paymentGateway = null;
+if (cfg.Features.EnableTicketing)
+{
+    ticketInventory = new TicketInventory(cfg.Ticket.TotalTickets, TimeSpan.FromSeconds(cfg.Ticket.ReservationTtlSeconds));
+    paymentGateway  = new DummyPaymentGateway(cfg.Ticket.PaymentDelayMs, cfg.Ticket.PaymentFailureRate);
+    Console.WriteLine($"[Ticket] 티켓팅 모듈 초기화  totalTickets={cfg.Ticket.TotalTickets}  " +
+                      $"ttl={cfg.Ticket.ReservationTtlSeconds}s  payDelay={cfg.Ticket.PaymentDelayMs}ms  " +
+                      $"failRate={cfg.Ticket.PaymentFailureRate:P0}");
+}
+
 if (cfg.Features.EnableLogin || cfg.Features.RequireAuth)
 {
     redis = ConnectionMultiplexer.Connect(cfg.Auth.RedisConnectionString);
@@ -135,6 +148,20 @@ listener.OnClientConnected = async session =>
 listener.OnClientDisconnected = session =>
 {
     metrics?.OnClientDisconnected();
+
+    // Ticket: 미결제 예약이 있으면 슬롯 반납 — Interlocked.Exchange 경합으로 결제 완료(Confirm)와 안전하게 처리
+    if (ticketInventory is not null)
+    {
+        var tctx = session.GetContext<TicketContext>();
+        if (tctx is not null)
+        {
+            ticketInventory.ReleaseByContext(tctx);
+            Console.WriteLine($"[-] {session.RemoteEndPoint}  user={tctx.Username}  " +
+                              $"(sessions: {metrics?.ConnectedCount ?? 0}  free={ticketInventory.FreeCount})");
+            return ValueTask.CompletedTask;
+        }
+    }
+
     // E2: 부착해 둔 컨텍스트를 캐스팅 없이 타입 안전하게 되읽는다
     var nick = session.GetContext<GameContext>()?.Nickname ?? "?";
     Console.WriteLine($"[-] {session.RemoteEndPoint}  nick={nick}  (sessions: {metrics?.ConnectedCount ?? 0})");
@@ -215,6 +242,72 @@ listener.OnReceived = async (session, data) =>
             Console.WriteLine($"[GATE-] {session.RemoteEndPoint}  토큰 검증 실패(만료·미존재)  token={tok.Token[..Math.Min(8, tok.Token.Length)]}...");
         }
     }
+    // ──────────── 티켓팅 분기 (EnableTicketing=true 전용) ────────────
+    else if (packetId == LoginRequestPacket.Id && loginService is null && ticketInventory is not null)
+    {
+        // 더미 로그인: 비번 검증 없이 아이디만 수락 — MySQL/Redis/PBKDF2 불필요.
+        // loginService is null 가드: 실제 LoginService가 있으면 위 분기가 우선하므로 충돌 없음.
+        var req = serializer.Deserialize<LoginRequestPacket>(data.Span);
+        var tctx = new TicketContext(req.Username);
+        session.Context = tctx;
+        session.TransitionTo(SessionState.Authenticated);
+        await session.SendAsync(new LoginResponsePacket { Success = true, Token = string.Empty });
+        Console.WriteLine($"[TICKET+] {session.RemoteEndPoint}  더미 로그인  user={req.Username}");
+    }
+    else if (packetId == TicketReserveRequestPacket.Id && ticketInventory is not null)
+    {
+        // 예약 요청: lock-free CAS로 슬롯 점유 시도 — await 없음, 즉시 반환(Non-blocking)
+        var tctx = session.GetContext<TicketContext>();
+        if (tctx is null) return; // 더미 로그인 없이 예약 시도 — 무시
+
+        var (status, slot) = ticketInventory.TryReserve(tctx);
+        var pkt = new TicketResultPacket
+        {
+            Status    = status,
+            Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+            Remaining = (byte)Math.Min(ticketInventory.FreeCount, byte.MaxValue)
+        };
+        await session.SendAsync(pkt);
+        Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={status}  slot={slot}  free={ticketInventory.FreeCount}");
+    }
+    else if (packetId == TicketPayRequestPacket.Id && ticketInventory is not null)
+    {
+        var tctx = session.GetContext<TicketContext>();
+        if (tctx is null) return;
+
+        // async 메모리 안전: data.Span은 await Task.Delay 이후 Pipe 내부 버퍼가 재사용되면 무효.
+        // Deserialize와 필드 복사를 반드시 첫 번째 await 이전에 완료해야 한다.
+        var pay = serializer.Deserialize<TicketPayRequestPacket>(data.Span);
+        bool simulateFail = pay.SimulateFailure; // await 전에 스택 변수로 복사
+
+        // 더미 결제 시뮬레이션: await Task.Delay(PaymentDelayMs) — Thread.Sleep 금지(I/O 스레드 블로킹)
+        bool charged = await paymentGateway!.ChargeAsync(tctx.Username, simulateFail, cts.Token);
+
+        TicketResultPacket result;
+        if (charged)
+        {
+            var (status, slot) = ticketInventory.Confirm(tctx);
+            result = new TicketResultPacket
+            {
+                Status    = status,
+                Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+                Remaining = (byte)Math.Min(ticketInventory.FreeCount, byte.MaxValue)
+            };
+            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=OK  status={status}  slot={slot}  free={ticketInventory.FreeCount}");
+        }
+        else
+        {
+            var (_, slot) = ticketInventory.Release(tctx);
+            result = new TicketResultPacket
+            {
+                Status    = TicketStatus.PaymentFailed,
+                Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+                Remaining = (byte)Math.Min(ticketInventory.FreeCount, byte.MaxValue)
+            };
+            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=FAIL  slot반납={slot}  free={ticketInventory.FreeCount}");
+        }
+        await session.SendAsync(result);
+    }
 };
 
 if (cfg.Features.EnableIdleTimeout)
@@ -245,7 +338,10 @@ listener.Start(cfg.Port);
 adminListener.Start(cfg.AdminPort);
 Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
 Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
-Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} login={cfg.Features.EnableLogin} requireAuth={cfg.Features.RequireAuth}");
+Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} " +
+                  $"login={cfg.Features.EnableLogin} requireAuth={cfg.Features.RequireAuth} ticketing={cfg.Features.EnableTicketing}");
+if (cfg.Features.EnableTicketing)
+    Console.WriteLine($"  Ticketing: ReserveId={TicketReserveRequestPacket.Id}  PayId={TicketPayRequestPacket.Id}  ResultId={TicketResultPacket.Id}  slots={cfg.Ticket.TotalTickets}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 // 주기 HP 브로드캐스트 Task: 200ms마다 전체 클라에 현재 HP 전송.
@@ -274,6 +370,23 @@ _ = Task.Run(async () =>
         }
     }
 });
+
+// TTL 스위퍼: EnableTicketing일 때만 활성. 1초 주기로 만료 예약을 자동 반납한다.
+// Task.Run: 스위퍼 루프가 I/O 스레드를 점유하지 않도록 분리(SweepExpired 자체는 non-blocking이나 주기 루프를 격리)
+if (ticketInventory is not null)
+{
+    _ = Task.Run(async () =>
+    {
+        while (!cts.Token.IsCancellationRequested)
+        {
+            try { await Task.Delay(1000, cts.Token); }
+            catch (OperationCanceledException) { break; }
+            int released = ticketInventory.SweepExpired();
+            if (released > 0)
+                Console.WriteLine($"[TTL] {released}개 만료 예약 반납  free={ticketInventory.FreeCount}");
+        }
+    });
+}
 
 // 모니터 루프
 _ = Task.Run(async () =>

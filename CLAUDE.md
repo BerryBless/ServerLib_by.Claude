@@ -7,8 +7,8 @@
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
-- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`(`RequireAuth` 토글로 미인증 드롭 가능), 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력; `LoginRequestPacket`(Id=10)·`AuthTokenPacket`(Id=12) 병행 처리·`[AUTH+]`/`[GATE+]` 로그
-- `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지; `EnableAuthGating` 토글로 T0가 AuthServer(9200)→토큰→게임서버 `AuthTokenPacket` 제시 데모
+- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`(`RequireAuth` 토글로 미인증 드롭 가능), 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력; `LoginRequestPacket`(Id=10)·`AuthTokenPacket`(Id=12) 병행 처리·`[AUTH+]`/`[GATE+]` 로그; `EnableTicketing` 토글로 티켓팅 모드 전환 — 더미 로그인(Id=10)·`TicketReserveRequestPacket`(Id=13)·`TicketPayRequestPacket`(Id=14) 처리·`TicketResultPacket`(Id=15) 응답, 이탈 시 자동 슬롯 반납, 1초 TTL 스위퍼 Task
+- `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지; `EnableAuthGating` 토글로 T0가 AuthServer(9200)→토큰→게임서버 `AuthTokenPacket` 제시 데모; `EnableTicketing` 토글로 티켓팅 데모 전환 — 7클라 동시 선착순 예약(`FailingClientIndex`=0이 `SimulateFailure=true`로 결제 실패 후 재예약·재결제 시연), `Channel<byte[]>` inbox로 `OnReceived` 콜백 비동기 처리, 최종 Confirmed=3 불변식 출력
 - `AuthServer/Program.cs` — 독립 인증 서버 예제(port 9200): `ServerNet.CreateListener()`(registry 생략) + `LoginService` 전담 → `LoginRequestPacket`(Id=10)만 처리, Redis 토큰 발급
 - `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
 
@@ -72,6 +72,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/mob_combat_0612.md` | 2026-06-12 | 보스 몹 전투 컨텐츠 (DamagePacket·MobHpPacket·MobDeathPacket, MobManager lock-free 설계) |
 | `plan/auth_server_separation_0616.md` | 2026-06-16 | 인증 서버 독립 프로세스 분리 (AuthServer.exe 9200 + Auth 공유 라이브러리 + AuthTokenPacket·RequireAuth 게이팅) |
 | `plan/token_username_recovery_0617.md` | 2026-06-17 | 토큰 게이팅 시 Username 복원 (ITokenStore.TryResolveAsync·TokenInfo, Redis delimited String, AuthContext.Username 완성) |
+| `plan/ticketing_0618.md` | 2026-06-18 | 선착순 티켓팅 시스템 (lock-free TicketInventory·더미 로그인/결제·reserve-then-pay·TTL 스위퍼, 22개 신규 테스트) |
 
 ---
 
