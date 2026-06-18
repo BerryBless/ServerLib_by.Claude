@@ -74,6 +74,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/token_username_recovery_0617.md` | 2026-06-17 | 토큰 게이팅 시 Username 복원 (ITokenStore.TryResolveAsync·TokenInfo, Redis delimited String, AuthContext.Username 완성) |
 | `plan/ticketing_0618.md` | 2026-06-18 | 선착순 티켓팅 시스템 (lock-free TicketInventory·더미 로그인/결제·reserve-then-pay·TTL 스위퍼, 22개 신규 테스트) |
 | `plan/ticketing_review_0618.md` | 2026-06-18 | 티켓팅 7차원 종합 코드 리뷰 (SEC-01 결제전 검증누락·ARCH-01 도메인오염·GAP-01 SweepExpired 미테스트 등 15건) |
+| `plan/soak_test_0618.md` | 2026-06-18 | 소크 테스트 하네스 설계 (N개 클라 연결 churn·[STATS] 파싱·Hard 판정·child 프로세스 아키텍처) |
 
 ---
 
