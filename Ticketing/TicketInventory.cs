@@ -53,8 +53,8 @@ public sealed class TicketInventory
     // Volatile.Read/Write: 스위퍼 스레드에서 읽고 TryReserve 스레드에서 쓰는 교차 접근이므로 가시성 보장 필요.
     private readonly long[] _reservedAtTicks;
 
-    private readonly int  _totalTickets;
-    // Stopwatch.Frequency: GetTimestamp()의 초당 틱 수. 플랫폼마다 다르므로 런타임에 취득한다.
+    private readonly int  _totalTickets; // 슬롯 배열 경계값 — 루프 상한으로만 사용
+    // long: Stopwatch.GetTimestamp() delta로 TTL 판단. Stopwatch 틱은 커널 전환 없는 단조 시계(시스템 시각 변경에 무관)
     private readonly long _ttlTicks;
 
     /// <summary>전체 슬롯 수입니다.</summary>
@@ -73,11 +73,16 @@ public sealed class TicketInventory
         }
     }
 
-    /// <param name="totalTickets">재고 슬롯 수입니다.</param>
+    /// <summary>티켓 재고를 초기화합니다.</summary>
+    /// <param name="totalTickets">재고 슬롯 수입니다. 1–255 범위여야 합니다.</param>
     /// <param name="reservationTtl">예약 후 결제하지 않으면 자동 반납되는 시간입니다.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="totalTickets"/>가 1 미만이거나 255 초과인 경우.</exception>
     public TicketInventory(int totalTickets, TimeSpan reservationTtl)
     {
-        if (totalTickets <= 0) throw new ArgumentOutOfRangeException(nameof(totalTickets));
+        // [ARCH-07] TicketResultPacket.Remaining이 byte(0~255)이므로 슬롯 수 상한을 byte.MaxValue로 제한
+        if (totalTickets <= 0 || totalTickets > byte.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(totalTickets),
+                $"totalTickets은 1–{byte.MaxValue} 범위여야 합니다. (TicketResultPacket.Remaining 필드가 1바이트)");
         _totalTickets    = totalTickets;
         _states          = new int[totalTickets];              // 기본값 0 = Free
         _owners          = new TicketContext?[totalTickets];
@@ -170,9 +175,14 @@ public sealed class TicketInventory
     /// 세션 이탈 또는 TTL 스위퍼에서 슬롯을 <c>Free</c>로 반납합니다.
     /// <see cref="TicketContext.SlotIndex"/>가 이미 소비됐거나 예약이 없으면 no-op입니다.
     /// </summary>
-    /// <param name="ctx">슬롯을 반납할 세션의 컨텍스트입니다.</param>
-    public void ReleaseByContext(TicketContext ctx)
+    /// <param name="ctx">슬롯을 반납할 세션의 컨텍스트입니다. <see langword="null"/>이면 no-op입니다.</param>
+    /// <remarks>
+    /// <b>void 반환 이유:</b> 이탈·TTL 경로에서는 결과를 클라이언트에 전달할 세션이 없으므로
+    /// 반환값이 불필요합니다. 결제 실패 응답이 필요한 경우에는 <see cref="Release"/>를 사용하세요.
+    /// </remarks>
+    public void ReleaseByContext(TicketContext? ctx)
     {
+        if (ctx is null) return; // 로그인 전 이탈 — no-op
         // Exchange: 단일 소비 — 이탈 핸들러와 동시에 들어온 결제 Confirm 중 하나만 승리한다.
         int slot = Interlocked.Exchange(ref ctx.SlotIndex, -1);
         if (slot < 0) return; // 이미 소비됨(확정·반납됨) — no-op
@@ -202,7 +212,8 @@ public sealed class TicketInventory
             if (Volatile.Read(ref _states[i]) != Reserved) continue;
 
             // 2. TTL 미초과 슬롯 건너뜀
-            long reservedAt = Volatile.Read(ref _reservedAtTicks[i]);
+            // Interlocked.Read: Transport 계층과 일관성 유지 — x86 32비트에서 long torn-read 방지
+            long reservedAt = Interlocked.Read(ref _reservedAtTicks[i]);
             if (now - reservedAt < _ttlTicks) continue;
 
             // 3. 소유자 참조 획득
@@ -215,6 +226,8 @@ public sealed class TicketInventory
             if (Interlocked.CompareExchange(ref owner.SlotIndex, -1, i) != i) continue;
 
             // 5. CAS 성공: 스위퍼가 단독으로 슬롯 정리
+            Debug.Assert(Volatile.Read(ref _states[i]) == Reserved,
+                $"SweepExpired: 슬롯 {i} CAS 성공 후 Reserved 상태가 아님 — 예상치 못한 상태 전이");
             // _owners 먼저 null: _states가 아직 Reserved이므로 신규 TryReserve가 불가 — null 쓰기 안전
             Volatile.Write(ref _owners[i], null);
             Interlocked.Exchange(ref _states[i], Free);

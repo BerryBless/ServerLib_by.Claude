@@ -35,6 +35,7 @@ public sealed class TicketContext
     /// <summary>현재 예약된 슬롯 인덱스입니다. <c>-1</c>이면 예약 없음입니다.</summary>
     public int SlotIndex = -1;
 
+    /// <summary>새 티켓팅 컨텍스트를 초기화합니다.</summary>
     /// <param name="username">더미 로그인 시 입력된 사용자 이름입니다.</param>
     public TicketContext(string username) => Username = username;
 }

@@ -267,7 +267,9 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
         };
         conn.OnDisconnected = () =>
         {
-            inbox.Writer.TryComplete(); // 채널 완료 → 대기 중인 ReadAsync가 OperationCanceledException 발생
+            // TryComplete → 대기 중인 ReadAsync가 ChannelClosedException(InvalidOperationException 파생)을 throw한다.
+            // OCE가 아님 — ReadNextAsync의 catch(Exception)에서 처리됨.
+            inbox.Writer.TryComplete();
             return ValueTask.CompletedTask;
         };
 

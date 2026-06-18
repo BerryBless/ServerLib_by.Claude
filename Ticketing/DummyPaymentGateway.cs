@@ -23,6 +23,7 @@ public sealed class DummyPaymentGateway : IDummyPaymentGateway
     /// <summary>주변 실패율(0.0~1.0)입니다. 0이면 항상 성공합니다.</summary>
     public double FailureRate { get; }
 
+    /// <summary>더미 결제 게이트웨이를 초기화합니다.</summary>
     /// <param name="delayMs">결제 지연 시간(밀리초). 기본 300ms.</param>
     /// <param name="failureRate">주변 실패율(0.0~1.0). 기본 0(항상 성공).</param>
     public DummyPaymentGateway(int delayMs = 300, double failureRate = 0.0)
