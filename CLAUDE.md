@@ -76,6 +76,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/ticketing_review_0618.md` | 2026-06-18 | 티켓팅 7차원 종합 코드 리뷰 (SEC-01 결제전 검증누락·ARCH-01 도메인오염·GAP-01 SweepExpired 미테스트 등 15건) |
 | `plan/soak_test_0618.md` | 2026-06-18 | 소크 테스트 하네스 설계 (N개 클라 연결 churn·[STATS] 파싱·Hard 판정·child 프로세스 아키텍처) |
 | `plan/ticketing_seat_designation_0619.md` | 2026-06-19 | 좌석지정 예약 (2D 좌석·SeatMapRequest/Response·SeatTaken, TryReserve(seatId), SnapshotStates, 144개 테스트) |
+| `plan/ticketing_seat_designation_review_0620.md` | 2026-06-20 | 좌석지정 예약 7차원 종합 코드 리뷰 (ARCH-02 별칭버그·SEC-NEW-01 SimulateFailure노출·STYLE-03 2D테스트누락 등 High 4건, 종합 77점) |
 
 ---
 
