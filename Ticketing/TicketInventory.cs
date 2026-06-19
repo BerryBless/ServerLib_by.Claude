@@ -159,6 +159,33 @@ public sealed class TicketInventory
     }
 
     /// <summary>
+    /// 클라이언트가 지정한 Row/Col 좌표로 좌석을 예약합니다.
+    /// Row/Col→seatId 변환과 경계 검증이 이 메서드에 캡슐화되므로 호출자는 변환 로직을 구현하지 않아야 합니다.
+    /// </summary>
+    /// <param name="ctx">예약을 시도하는 세션의 컨텍스트입니다.</param>
+    /// <param name="row">좌석 행 인덱스입니다(0-based). 유효 범위: <c>0 ≤ row &lt; Rows</c>.</param>
+    /// <param name="col">좌석 열 인덱스입니다(0-based). 유효 범위: <c>0 ≤ col &lt; Cols</c>.</param>
+    /// <returns>
+    /// (<see cref="TicketStatus.Reserved"/>, seatId): 성공 |
+    /// (<see cref="TicketStatus.AlreadyReserved"/>, 기존 슬롯): 이미 예약 중 |
+    /// (<see cref="TicketStatus.SeatTaken"/>, -1): 범위 초과 또는 좌석 점유됨
+    /// </returns>
+    /// <remarks>
+    /// Row/Col 경계를 검증한 뒤 <see cref="TryReserve"/>에 위임합니다.
+    /// Col 범위 초과 입력(예: 2×3 그리드에서 Row=0, Col=3)이 별칭 버그(aliasing)를 유발하지 않도록
+    /// 이 메서드에서 사전 차단합니다.
+    /// </remarks>
+    public (TicketStatus status, int slot) TryReserveByRowCol(TicketContext ctx, int row, int col)
+    {
+        // Row/Col 경계 검증: 부호 없는 비교로 음수도 단번에 거부 — 별칭 버그 방지
+        if ((uint)row >= (uint)_rows || (uint)col >= (uint)_cols)
+            return (TicketStatus.SeatTaken, -1);
+
+        int seatId = row * _cols + col;
+        return TryReserve(ctx, seatId);
+    }
+
+    /// <summary>
     /// 현재 모든 좌석의 상태 스냅샷을 <paramref name="dest"/>에 기록합니다.
     /// </summary>
     /// <param name="dest">
@@ -171,6 +198,11 @@ public sealed class TicketInventory
     /// <br/>
     /// <b>[Memory Allocation:]</b> Zero-allocation. 호출 측에서 <c>stackalloc</c> 버퍼를 전달하면
     /// 이 메서드 내부에서 힙 할당이 발생하지 않습니다.
+    /// <br/>
+    /// <b>[Span&lt;byte&gt; 소유권 및 생명주기:]</b> <paramref name="dest"/>는 호출자가 소유합니다.
+    /// 이 메서드가 반환된 후에도 호출자는 <paramref name="dest"/>를 안전하게 읽을 수 있습니다.
+    /// <c>stackalloc</c>으로 할당한 경우 해당 스택 프레임이 유효한 동안에만 접근 가능하며,
+    /// <see langword="await"/> 경계를 넘겨 전달하면 안 됩니다(비동기 메서드에서 stackalloc Span은 await 후 무효).
     /// <br/>
     /// <b>[용도:]</b> <see cref="SeatMapResponsePacket"/> 직렬화 전에 서버가 호출합니다.
     /// </remarks>

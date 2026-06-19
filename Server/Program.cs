@@ -33,6 +33,8 @@ LoginService? loginService = null;
 // EnableTicketing: 더미 로그인+선착순 티켓 — loginService·tokenStore와 무관하게 별도 초기화.
 TicketInventory? ticketInventory = null;
 IDummyPaymentGateway? paymentGateway = null;
+// Interlocked.CompareExchange: FailingUsername의 첫 번째 결제에만 실패 — 0=미사용, 1=소비됨
+int ticketFailerUsed = 0;
 if (cfg.Features.EnableTicketing)
 {
     ticketInventory = new TicketInventory(cfg.Ticket.Rows, cfg.Ticket.Cols, TimeSpan.FromSeconds(cfg.Ticket.ReservationTtlSeconds));
@@ -294,9 +296,9 @@ listener.OnReceived = async (session, data) =>
         if (tctx is null) return; // 더미 로그인 없이 예약 시도 — 무시
 
         var req = serializer.Deserialize<TicketReserveRequestPacket>(data.Span);
-        // seatId = row * Cols + col: 2D 좌석 주소를 내부 평면 인덱스로 변환
-        int seatId = req.Row * ticketInventory.Cols + req.Col;
-        var (status, slot) = ticketInventory.TryReserve(tctx, seatId);
+        // TryReserveByRowCol: Row/Col 경계 검증과 seatId 변환을 도메인 메서드에 위임
+        // Col >= Cols 등 범위 초과 입력은 SeatTaken(-1)으로 거부됨(alias 버그 방지)
+        var (status, slot) = ticketInventory.TryReserveByRowCol(tctx, req.Row, req.Col);
         int freeAfterReserve = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
         var pkt = new TicketResultPacket
         {
@@ -327,22 +329,30 @@ listener.OnReceived = async (session, data) =>
             return;
         }
 
-        // async 메모리 안전: data.Span은 await Task.Delay 이후 Pipe 내부 버퍼가 재사용되면 무효.
-        // Deserialize와 필드 복사를 반드시 첫 번째 await 이전에 완료해야 한다.
-        var pay = serializer.Deserialize<TicketPayRequestPacket>(data.Span);
-        bool simulateFail = pay.SimulateFailure; // await 전에 스택 변수로 복사
+        // [SEC-NEW-01] SimulateFailure는 와이어에서 제거 — 서버 config FailingUsername 기반 결정론적 실패
+        // FailingUsername의 첫 번째 결제 요청만 실패(Interlocked one-shot) → 재예약·재결제 흐름 데모
+        bool simulateFail = cfg.Ticket.FailingUsername is { Length: > 0 } failingUser
+            && tctx.Username == failingUser
+            && Interlocked.CompareExchange(ref ticketFailerUsed, 1, 0) == 0;
 
         // 더미 결제 시뮬레이션: await Task.Delay(PaymentDelayMs) — Thread.Sleep 금지(I/O 스레드 블로킹)
         bool charged;
-        try
+        if (simulateFail)
         {
-            charged = await paymentGateway!.ChargeAsync(tctx.Username, simulateFail, cts.Token);
+            charged = false; // 결정론적 실패 — 게이트웨이 호출 없이 즉시 반환
         }
-        catch (OperationCanceledException)
+        else
         {
-            // [DL-T01] 서버 종료 시 OCE: 슬롯 반납 후 응답 생략(세션이 이미 종료 중)
-            ticketInventory.ReleaseByContext(tctx);
-            return;
+            try
+            {
+                charged = await paymentGateway!.ChargeAsync(tctx.Username, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // [DL-T01] 서버 종료 시 OCE: 슬롯 반납 후 응답 생략(세션이 이미 종료 중)
+                ticketInventory.ReleaseByContext(tctx);
+                return;
+            }
         }
 
         TicketResultPacket result;

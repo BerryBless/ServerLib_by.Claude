@@ -33,16 +33,12 @@ public sealed class DummyPaymentGateway : IDummyPaymentGateway
     }
 
     /// <inheritdoc/>
-    public async ValueTask<bool> ChargeAsync(string username, bool simulateFailure, CancellationToken ct = default)
+    public async ValueTask<bool> ChargeAsync(string username, CancellationToken ct = default)
     {
         // 결제 지연 시뮬레이션: Thread.Sleep 대신 Task.Delay — I/O 스레드를 블로킹하지 않는다.
         // await 중에는 I/O 스레드가 다른 세션을 처리할 수 있어 서버 처리량에 영향이 없다.
         if (PaymentDelayMs > 0)
             await Task.Delay(PaymentDelayMs, ct);
-
-        // SimulateFailure=true이면 무조건 실패 — 데모에서 결제 실패→반납→재예약 흐름을 결정론적으로 시연
-        if (simulateFailure)
-            return false;
 
         // Random.Shared: ThreadLocal 슬롯 기반 lock-free PRNG — 동시 다수 I/O 스레드에서 락 없이 안전
         return Random.Shared.NextDouble() >= FailureRate;

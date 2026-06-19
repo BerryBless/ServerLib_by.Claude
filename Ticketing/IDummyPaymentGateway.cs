@@ -25,8 +25,7 @@ public interface IDummyPaymentGateway
 {
     /// <summary>지정된 사용자에 대한 더미 결제를 시뮬레이션합니다.</summary>
     /// <param name="username">결제 사용자 이름입니다.</param>
-    /// <param name="simulateFailure"><see langword="true"/>이면 결제 지연 후 반드시 실패합니다.</param>
     /// <param name="ct">작업 취소 토큰입니다.</param>
     /// <returns>결제 성공 여부입니다.</returns>
-    ValueTask<bool> ChargeAsync(string username, bool simulateFailure, CancellationToken ct = default);
+    ValueTask<bool> ChargeAsync(string username, CancellationToken ct = default);
 }

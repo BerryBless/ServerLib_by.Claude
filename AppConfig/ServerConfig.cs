@@ -91,6 +91,13 @@ public sealed class TicketConfig
     /// <summary>더미 결제 주변 실패율(0.0~1.0)입니다. 기본 0(항상 성공).</summary>
     public double PaymentFailureRate { get; set; } = 0.0;
 
+    /// <summary>
+    /// 결제 실패를 한 번 시뮬레이션할 사용자 이름입니다. 빈 문자열이면 비활성화됩니다.
+    /// 데모에서 <c>PaymentFailed → 슬롯 반납 → 재예약 → 재결제</c> 흐름을 결정론적으로 시연합니다.
+    /// 해당 사용자의 첫 번째 결제 요청만 실패하며, 이후 재시도는 정상 처리됩니다.
+    /// </summary>
+    public string FailingUsername { get; set; } = string.Empty;
+
     /// <summary>예약 후 결제하지 않으면 자동 반납되는 TTL(초)입니다. 기본 30초.</summary>
     public int ReservationTtlSeconds { get; set; } = 30;
 }

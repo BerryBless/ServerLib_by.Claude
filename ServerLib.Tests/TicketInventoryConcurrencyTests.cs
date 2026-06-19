@@ -11,14 +11,18 @@ namespace ServerLib.Tests;
 public class TicketInventoryConcurrencyTests
 {
     /// <summary>단순 1행×N열 그리드 인벤토리를 생성합니다. seatId = col(0..cols-1).</summary>
-    private static TicketInventory Make(int cols = 3) =>
+    private static TicketInventory Make1xN(int cols = 3) =>
         new TicketInventory(1, cols, TimeSpan.FromSeconds(30));
+
+    /// <summary>rows행×cols열 2D 그리드 인벤토리를 생성합니다. seatId = row*cols+col.</summary>
+    private static TicketInventory Make2D(int rows, int cols) =>
+        new TicketInventory(rows, cols, TimeSpan.FromSeconds(30));
 
     // ① 64개 Task 동시 예약 → 정확히 TotalTickets개만 Reserved, 나머지 SeatTaken
     [Fact]
     public async Task Concurrent_reserve_seat_designated_exactly_totalTickets_succeed()
     {
-        var inv      = Make(3); // 3석: seatId 0,1,2
+        var inv      = Make1xN(3); // 3석: seatId 0,1,2
         int concurrency = 64;
 
         // [LOCK-05] CI 2코어 환경에서 Barrier 동기 블로킹으로 ThreadPool 스레드 고갈 방지
@@ -57,7 +61,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public async Task Concurrent_reserve_same_seat_exactly_one_succeeds()
     {
-        var inv     = Make(3);
+        var inv     = Make1xN(3);
         int concurrency = 50;
         ThreadPool.SetMinThreads(concurrency, concurrency);
 
@@ -85,7 +89,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void After_all_confirmed_reserve_returns_seatTaken()
     {
-        var inv  = Make(3);
+        var inv  = Make1xN(3);
         var ctxs = Enumerable.Range(0, 3).Select(i => new TicketContext($"user{i}")).ToArray();
 
         for (int s = 0; s < 3; s++)
@@ -105,7 +109,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void After_release_new_context_can_reserve_same_seat()
     {
-        var inv  = Make(3);
+        var inv  = Make1xN(3);
         var ctxs = Enumerable.Range(0, 3).Select(i => new TicketContext($"user{i}")).ToArray();
 
         // 3개 전부 좌석지정 예약
@@ -130,7 +134,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void Double_confirm_second_returns_notReserved()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var ctx = new TicketContext("user");
 
         inv.TryReserve(ctx, 0);
@@ -146,7 +150,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public async Task Concurrent_confirm_and_releaseByContext_exactly_one_wins()
     {
-        var inv = Make(1); // 슬롯 1개만
+        var inv = Make1xN(1); // 슬롯 1개만
         var ctx = new TicketContext("user");
         inv.TryReserve(ctx, 0);
 
@@ -188,7 +192,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void TryReserve_same_context_twice_returns_alreadyReserved()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var ctx = new TicketContext("user");
 
         var (first, _)  = inv.TryReserve(ctx, 0);
@@ -202,7 +206,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void FreeCount_tracks_slot_transitions_correctly()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         Assert.Equal(3, inv.FreeCount);
 
         var ctx0 = new TicketContext("u0");
@@ -227,7 +231,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void TryReserve_negative_seatId_returns_seatTaken()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var ctx = new TicketContext("user");
 
         var (status, slot) = inv.TryReserve(ctx, -1);
@@ -241,7 +245,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void TryReserve_out_of_range_seatId_returns_seatTaken()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var ctx = new TicketContext("user");
 
         var (status, slot) = inv.TryReserve(ctx, 99);
@@ -256,7 +260,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void SnapshotStates_reflects_free_reserved_sold_correctly()
     {
-        var inv  = Make(3);
+        var inv  = Make1xN(3);
         var ctx0 = new TicketContext("u0");
         var ctx1 = new TicketContext("u1");
 
@@ -276,7 +280,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void SnapshotStates_with_larger_dest_writes_only_total_tickets()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         byte[] dest = new byte[10]; // 3보다 큰 버퍼
         Array.Fill(dest, (byte)0xFF);
 
@@ -351,7 +355,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void ReleaseByContext_null_context_is_noop()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var exception = Record.Exception(() => inv.ReleaseByContext(null));
         Assert.Null(exception);
         Assert.Equal(3, inv.FreeCount); // 슬롯 변화 없음
@@ -363,7 +367,7 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public void Release_without_reservation_returns_notReserved()
     {
-        var inv = Make(3);
+        var inv = Make1xN(3);
         var ctx = new TicketContext("user");
 
         var (status, slot) = inv.Release(ctx);
@@ -418,7 +422,153 @@ public class TicketInventoryConcurrencyTests
     public async Task DummyPaymentGateway_extreme_failureRates(double rate, bool expected)
     {
         var gw = new DummyPaymentGateway(delayMs: 0, failureRate: rate);
-        bool result = await gw.ChargeAsync("user", simulateFailure: false);
+        bool result = await gw.ChargeAsync("user");
         Assert.Equal(expected, result);
+    }
+
+    // ─────── STYLE-06: 동일 컨텍스트 반납 후 재예약 ───────
+
+    // ㉒ 예약한 컨텍스트가 Release 후 동일 좌석을 재예약할 수 있음
+    [Fact]
+    public void Same_context_can_reserve_after_release()
+    {
+        var inv = Make1xN(3);
+        var ctx = new TicketContext("user");
+
+        var (firstStatus, firstSlot) = inv.TryReserve(ctx, 0);
+        Assert.Equal(TicketStatus.Reserved, firstStatus);
+        Assert.Equal(0, firstSlot);
+
+        // 동일 컨텍스트로 Release
+        var (relStatus, relSlot) = inv.Release(ctx);
+        Assert.Equal(TicketStatus.Released, relStatus);
+        Assert.Equal(0, relSlot);
+        Assert.Equal(-1, ctx.SlotIndex); // 선형화 앵커 소비됨
+
+        // 동일 컨텍스트가 같은 좌석을 재예약
+        var (secondStatus, secondSlot) = inv.TryReserve(ctx, 0);
+        Assert.Equal(TicketStatus.Reserved, secondStatus);
+        Assert.Equal(0, secondSlot);
+        Assert.Equal(2, inv.FreeCount); // 3석 중 1석(seat 0)만 점유, 나머지 2석 Free
+    }
+
+    // ─────── STYLE-05: SweepExpired 후 SnapshotStates 반영 ───────
+
+    // ㉓ TTL 만료 스윕 후 SnapshotStates가 Free(0)을 반환함
+    [Fact]
+    public void After_sweep_expired_snapshot_shows_free()
+    {
+        var inv = new TicketInventory(1, 3, TimeSpan.FromMilliseconds(1));
+        var ctx = new TicketContext("user");
+        inv.TryReserve(ctx, 1); // 좌석 1 예약 → Reserved
+        Thread.Sleep(20);       // TTL(1ms) 충분히 초과
+
+        int released = inv.SweepExpired();
+
+        Assert.Equal(1, released);
+        Span<byte> snap = stackalloc byte[3];
+        inv.SnapshotStates(snap);
+        Assert.Equal(0, snap[0]); // Free
+        Assert.Equal(0, snap[1]); // Free (만료 후 반납됨)
+        Assert.Equal(0, snap[2]); // Free
+    }
+
+    // ─────── STYLE-03/ARCH-07: 2D 그리드 시나리오 ───────
+
+    // ㉔ TryReserveByRowCol: Col 범위 초과(별칭 버그) → SeatTaken
+    [Fact]
+    public void TryReserveByRowCol_col_out_of_range_returns_seatTaken()
+    {
+        // 2×3 그리드: Row=0, Col=3 → seatId=3이 되면 (1,0)을 잘못 점유하는 별칭 버그 발생
+        var inv = Make2D(2, 3);
+        var ctx = new TicketContext("user");
+
+        var (status, slot) = inv.TryReserveByRowCol(ctx, 0, 3); // Col=3 >= Cols=3
+
+        Assert.Equal(TicketStatus.SeatTaken, status);
+        Assert.Equal(-1, slot);
+        Assert.Equal(-1, ctx.SlotIndex); // SlotIndex 오염 없음
+        Assert.Equal(6, inv.FreeCount);  // 실제 좌석(1,0) 미점유 확인
+    }
+
+    // ㉕ TryReserveByRowCol: Row 범위 초과 → SeatTaken
+    [Fact]
+    public void TryReserveByRowCol_row_out_of_range_returns_seatTaken()
+    {
+        var inv = Make2D(2, 3);
+        var ctx = new TicketContext("user");
+
+        var (status, slot) = inv.TryReserveByRowCol(ctx, 2, 0); // Row=2 >= Rows=2
+
+        Assert.Equal(TicketStatus.SeatTaken, status);
+        Assert.Equal(-1, slot);
+    }
+
+    // ㉖ TryReserveByRowCol: 2D 그리드 마지막 유효 좌석(Row=1, Col=2) 정상 예약
+    [Fact]
+    public void TryReserveByRowCol_last_valid_seat_reserves_correctly()
+    {
+        var inv = Make2D(2, 3); // 2×3 그리드: seatId 0~5
+        var ctx = new TicketContext("user");
+
+        // Row=1, Col=2 → seatId = 1*3+2 = 5 (마지막 유효 좌석)
+        var (status, slot) = inv.TryReserveByRowCol(ctx, 1, 2);
+
+        Assert.Equal(TicketStatus.Reserved, status);
+        Assert.Equal(5, slot); // seatId=5
+        Assert.Equal(5, ctx.SlotIndex);
+        Assert.Equal(5, inv.FreeCount); // 1석 감소
+    }
+
+    // ㉗ TryReserveByRowCol: 같은 seatId가 두 Row/Col 조합으로 계산되지 않음 검증
+    //    2×3 그리드에서 (0,3)은 범위 초과이고 (1,0)과 같은 seatId=3을 가질 수 없어야 함
+    [Fact]
+    public void TryReserveByRowCol_no_aliasing_between_row_col_combos()
+    {
+        var inv = Make2D(2, 3);
+        var ctx1 = new TicketContext("user1");
+        var ctx2 = new TicketContext("user2");
+
+        // 유효 좌석 (1,0) → seatId=3 예약
+        var (validStatus, validSlot) = inv.TryReserveByRowCol(ctx1, 1, 0);
+        Assert.Equal(TicketStatus.Reserved, validStatus);
+        Assert.Equal(3, validSlot);
+
+        // 범위 초과 (0,3): 별칭이 없다면 SeatTaken(-1) 반환, seatId=3 재점유 없음
+        var (aliasStatus, _) = inv.TryReserveByRowCol(ctx2, 0, 3);
+        Assert.Equal(TicketStatus.SeatTaken, aliasStatus);
+        Assert.Equal(-1, ctx2.SlotIndex); // ctx2 SlotIndex 오염 없음
+
+        // (1,0)은 여전히 ctx1이 보유
+        Assert.Equal(3, ctx1.SlotIndex);
+    }
+
+    // ㉘ TryReserveByRowCol: 2D 그리드 동시 예약 — 정확히 TotalTickets개만 성공
+    [Fact]
+    public async Task TryReserveByRowCol_concurrent_2d_exactly_totalTickets_succeed()
+    {
+        var inv         = Make2D(2, 3); // 6석
+        int concurrency = 30;
+        ThreadPool.SetMinThreads(concurrency, concurrency);
+
+        var barrier = new Barrier(concurrency);
+        var results = new (TicketStatus status, int slot)[concurrency];
+
+        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        {
+            var ctx = new TicketContext($"user{i}");
+            int row = (i % 6) / 3; // 2행 순환
+            int col = (i % 6) % 3; // 3열 순환
+            barrier.SignalAndWait();
+            results[i] = inv.TryReserveByRowCol(ctx, row, col);
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        int reservedCount  = results.Count(r => r.status == TicketStatus.Reserved);
+        int seatTakenCount = results.Count(r => r.status == TicketStatus.SeatTaken);
+
+        Assert.Equal(6, reservedCount);               // 정확히 6석 예약 성공
+        Assert.Equal(concurrency - 6, seatTakenCount);
     }
 }

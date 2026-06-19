@@ -53,9 +53,13 @@ public struct SeatMapResponsePacket : IPacket
     /// <item><description>2 = Sold — 결제 확정</description></item>
     /// </list>
     /// 길이는 <see cref="Rows"/> × <see cref="Cols"/>와 같아야 합니다.
+    /// 역직렬화 전 기본값은 <see cref="Array.Empty{T}"/>이며 <see langword="null"/>이 될 수 없습니다.
     /// </summary>
     // byte[]: 좌석 상태 스냅샷 — Rows*Cols 소규모 배열(최대 255B). 참조 타입이지만 수명이 짧고 소규모임.
-    public byte[]? States { get; set; }
+    public byte[] States { get; set; }
+
+    /// <summary>기본 생성자. <see cref="States"/>를 빈 배열로 초기화합니다.</summary>
+    public SeatMapResponsePacket() { States = Array.Empty<byte>(); }
 
     /// <inheritdoc/>
     // 본문: [Rows(1B)] [Cols(1B)] + States[Rows*Cols]
@@ -67,7 +71,7 @@ public struct SeatMapResponsePacket : IPacket
         writer.WriteByte(Rows);
         writer.WriteByte(Cols);
         // States는 서버 측에서 SnapshotStates로 Rows*Cols 바이트를 정확히 채운 후 전달해야 합니다.
-        if (States is not null)
+        if (States.Length >= Rows * Cols)
             writer.WriteBytes(States.AsSpan(0, Rows * Cols));
     }
 
@@ -76,6 +80,10 @@ public struct SeatMapResponsePacket : IPacket
     {
         Rows = reader.ReadByte();
         Cols = reader.ReadByte();
+        // 와이어 공급 길이 상한 검증: TicketInventory 생성자의 255 제약과 동일한 불변식
+        if ((int)Rows * Cols > byte.MaxValue)
+            throw new InvalidDataException(
+                $"SeatMapResponsePacket: Rows*Cols={Rows * Cols}가 {byte.MaxValue}를 초과합니다.");
         // States: Rows*Cols 바이트 읽기 — 1회 힙 할당(소규모·저빈도 허용)
         States = reader.ReadBytes(Rows * Cols).ToArray();
     }

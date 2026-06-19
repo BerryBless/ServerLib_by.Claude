@@ -100,24 +100,23 @@ public class TicketPacketRoundTripTests
 
     // ─────── TicketPayRequestPacket ───────
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void TicketPayRequest_roundtrip_preserves_simulateFailure(bool simulateFailure)
+    [Fact]
+    public void TicketPayRequest_roundtrip_preserves_packetId()
     {
-        var pkt    = new TicketPayRequestPacket { SimulateFailure = simulateFailure };
+        // [SEC-NEW-01] SimulateFailure 필드 제거됨 — 본문 0B, 패킷 ID만 라운드트립 검증
+        var pkt    = new TicketPayRequestPacket();
         byte[] buf = new byte[PacketPool.HeaderSize + pkt.GetBodySize()];
         _serializer.Serialize(pkt, buf);
 
         var p2 = _serializer.Deserialize<TicketPayRequestPacket>(buf);
         Assert.Equal(TicketPayRequestPacket.Id, p2.PacketId);
-        Assert.Equal(simulateFailure, p2.SimulateFailure);
     }
 
     [Fact]
-    public void TicketPayRequest_bodySize_is_one()
+    public void TicketPayRequest_bodySize_is_zero()
     {
-        Assert.Equal(1, new TicketPayRequestPacket().GetBodySize());
+        // [SEC-NEW-01] SimulateFailure 필드 제거 → 본문 0B
+        Assert.Equal(0, new TicketPayRequestPacket().GetBodySize());
     }
 
     // ─────── TicketResultPacket ───────

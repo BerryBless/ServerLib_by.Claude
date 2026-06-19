@@ -241,6 +241,8 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
     int clientCount = cfg.Ticketing.ClientCount;
     int failingIdx  = cfg.Ticketing.FailingClientIndex;
     int headStartMs = cfg.Ticketing.FailerHeadStartMs;
+    // 0=Free 상수 — 좌석맵 States 배열에서 예약 가능한 좌석을 판별하는 매직 넘버를 명시
+    const byte SeatFree = 0;
 
     Console.WriteLine($"\n[TICKET] 좌석지정 티켓팅 데모 시작 — 클라이언트={clientCount}  실패클라={failingIdx}  headStart={headStartMs}ms");
     Console.WriteLine($"         흐름: 로그인 → 좌석맵 조회 → 좌석지정 예약(SeatTaken 시 재선택) → 결제");
@@ -291,11 +293,11 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
             if (!PacketPool.TryParseHeader(mapRaw, out ushort mapId, out _) || mapId != SeatMapResponsePacket.Id)
                 return null;
             var mapResp = serializer.Deserialize<SeatMapResponsePacket>(mapRaw);
-            if (mapResp.States is null || mapResp.Rows == 0 || mapResp.Cols == 0) return null;
+            if (mapResp.Rows == 0 || mapResp.Cols == 0 || mapResp.States.Length == 0) return null;
 
             int total = mapResp.Rows * mapResp.Cols;
             // 선호 좌석이 지정되어 있고 Free이면 그 좌석을 먼저 시도
-            if (preferSeatId >= 0 && preferSeatId < total && mapResp.States[preferSeatId] == 0)
+            if (preferSeatId >= 0 && preferSeatId < total && mapResp.States[preferSeatId] == SeatFree)
             {
                 byte pr = (byte)(preferSeatId / mapResp.Cols);
                 byte pc = (byte)(preferSeatId % mapResp.Cols);
@@ -304,7 +306,7 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
             // 첫 번째 빈 좌석 탐색
             for (int s = 0; s < total; s++)
             {
-                if (mapResp.States[s] == 0) // 0 = Free
+                if (mapResp.States[s] == SeatFree)
                 {
                     byte r = (byte)(s / mapResp.Cols);
                     byte c = (byte)(s % mapResp.Cols);
@@ -387,8 +389,8 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
                 return;
             }
 
-            // ③ 결제 요청 (failer는 의도적 실패)
-            await conn.SendAsync(new TicketPayRequestPacket { SimulateFailure = isFailer }, ct);
+            // ③ 결제 요청 (failer의 첫 번째 결제는 서버 config FailingUsername으로 결정론적 실패)
+            await conn.SendAsync(new TicketPayRequestPacket(), ct);
             var payRaw    = await ReadNextAsync();
             var payResult = serializer.Deserialize<TicketResultPacket>(payRaw);
             Console.WriteLine($"  [{i}] 결제={payResult.Status}  slot={payResult.Slot}  remaining={payResult.Remaining}");
@@ -424,7 +426,7 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
                     if (retryRes.Status == TicketStatus.Reserved)
                     {
                         // ⑤ Failer 재결제
-                        await conn.SendAsync(new TicketPayRequestPacket { SimulateFailure = false }, ct);
+                        await conn.SendAsync(new TicketPayRequestPacket(), ct);
                         var retryPayRaw = await ReadNextAsync();
                         var retryPay    = serializer.Deserialize<TicketResultPacket>(retryPayRaw);
                         Console.WriteLine($"  [{i}] 재결제={retryPay.Status}  slot={retryPay.Slot}  ← Failer 최종");
@@ -469,7 +471,6 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
 
     await Task.WhenAll(otherTasks.Append(failerTask));
 
-    int totalSeats = cfg.Ticketing.ClientCount; // 참고: 실제 좌석 수는 서버 config에서
     Console.WriteLine($"\n[TICKET] 최종 결과 — Confirmed={confirmed}  SoldOut={soldOut}  Failed={failed}");
     Console.WriteLine($"[TICKET] 불변식: Confirmed({confirmed}) == min(ClientCount({clientCount}), TotalSeats)");
 }
