@@ -30,4 +30,11 @@ public enum TicketStatus : byte
 
     /// <summary>슬롯 반납 완료입니다 (이탈·TTL·결제 실패 공용).</summary>
     Released = 6,
+
+    /// <summary>
+    /// 지정 좌석 점유됨 — 요청한 좌석이 이미 Reserved 또는 Sold 상태이거나 좌석 번호가 유효 범위 밖입니다.
+    /// 클라이언트는 최신 좌석맵(<see cref="SeatMapRequestPacket"/>·<see cref="SeatMapResponsePacket"/>)을
+    /// 재조회하여 다른 빈 좌석을 선택하고 예약을 재시도해야 합니다.
+    /// </summary>
+    SeatTaken = 7,
 }

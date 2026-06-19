@@ -35,9 +35,9 @@ TicketInventory? ticketInventory = null;
 IDummyPaymentGateway? paymentGateway = null;
 if (cfg.Features.EnableTicketing)
 {
-    ticketInventory = new TicketInventory(cfg.Ticket.TotalTickets, TimeSpan.FromSeconds(cfg.Ticket.ReservationTtlSeconds));
+    ticketInventory = new TicketInventory(cfg.Ticket.Rows, cfg.Ticket.Cols, TimeSpan.FromSeconds(cfg.Ticket.ReservationTtlSeconds));
     paymentGateway  = new DummyPaymentGateway(cfg.Ticket.PaymentDelayMs, cfg.Ticket.PaymentFailureRate);
-    Console.WriteLine($"[Ticket] 티켓팅 모듈 초기화  totalTickets={cfg.Ticket.TotalTickets}  " +
+    Console.WriteLine($"[Ticket] 티켓팅 모듈 초기화  grid={cfg.Ticket.Rows}×{cfg.Ticket.Cols}(총{cfg.Ticket.Rows * cfg.Ticket.Cols}석)  " +
                       $"ttl={cfg.Ticket.ReservationTtlSeconds}s  payDelay={cfg.Ticket.PaymentDelayMs}ms  " +
                       $"failRate={cfg.Ticket.PaymentFailureRate:P0}");
 }
@@ -267,13 +267,36 @@ listener.OnReceived = async (session, data) =>
         await session.SendAsync(new LoginResponsePacket { Success = true, Token = string.Empty });
         Console.WriteLine($"[TICKET+] {session.RemoteEndPoint}  더미 로그인  user={req.Username}");
     }
+    else if (packetId == SeatMapRequestPacket.Id && ticketInventory is not null)
+    {
+        // 좌석맵 조회: Non-blocking. stackalloc으로 스택 버퍼 확보 → SnapshotStates로 zero-alloc 기록.
+        // states.ToArray()는 Rows*Cols 소규모 할당(≤255B)이며 저빈도 경로이므로 허용.
+        var tctx = session.GetContext<TicketContext>();
+        if (tctx is null) return; // 더미 로그인 없이 조회 시도 — 무시
+
+        int total = ticketInventory.TotalTickets;
+        // stackalloc: 최대 255석 — SnapshotStates 호출 동안 스택 프레임 내 유효, 동기 완료 보장
+        Span<byte> states = stackalloc byte[total];
+        ticketInventory.SnapshotStates(states);
+        var mapPkt = new SeatMapResponsePacket
+        {
+            Rows   = (byte)ticketInventory.Rows,
+            Cols   = (byte)ticketInventory.Cols,
+            States = states.ToArray() // SnapshotStates 결과를 패킷 필드로 복사(소규모 1회 할당)
+        };
+        await session.SendAsync(mapPkt);
+    }
     else if (packetId == TicketReserveRequestPacket.Id && ticketInventory is not null)
     {
-        // 예약 요청: lock-free CAS로 슬롯 점유 시도 — await 없음, 즉시 반환(Non-blocking)
+        // 좌석지정 예약 요청: 클라이언트가 Row/Col을 지정 → seatId로 평면화 → lock-free CAS.
+        // await 없음, 즉시 반환(Non-blocking). SeatTaken 시 클라가 좌석맵 재조회 후 재시도.
         var tctx = session.GetContext<TicketContext>();
         if (tctx is null) return; // 더미 로그인 없이 예약 시도 — 무시
 
-        var (status, slot) = ticketInventory.TryReserve(tctx);
+        var req = serializer.Deserialize<TicketReserveRequestPacket>(data.Span);
+        // seatId = row * Cols + col: 2D 좌석 주소를 내부 평면 인덱스로 변환
+        int seatId = req.Row * ticketInventory.Cols + req.Col;
+        var (status, slot) = ticketInventory.TryReserve(tctx, seatId);
         int freeAfterReserve = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
         var pkt = new TicketResultPacket
         {
@@ -282,7 +305,9 @@ listener.OnReceived = async (session, data) =>
             Remaining = (byte)Math.Min(freeAfterReserve, byte.MaxValue)
         };
         await session.SendAsync(pkt);
-        Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={status}  slot={slot}  free={freeAfterReserve}");
+        // 좌석을 문자+숫자 형식(예: A1)으로 출력 — Row=0→'A', Col=0→1
+        char rowChar = (char)('A' + req.Row);
+        Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={status}  seat={rowChar}{req.Col + 1}(seatId={slot})  free={freeAfterReserve}");
     }
     else if (packetId == TicketPayRequestPacket.Id && ticketInventory is not null)
     {
@@ -395,7 +420,7 @@ Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={S
 Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} " +
                   $"login={cfg.Features.EnableLogin} requireAuth={cfg.Features.RequireAuth} ticketing={cfg.Features.EnableTicketing}");
 if (cfg.Features.EnableTicketing)
-    Console.WriteLine($"  Ticketing: ReserveId={TicketReserveRequestPacket.Id}  PayId={TicketPayRequestPacket.Id}  ResultId={TicketResultPacket.Id}  slots={cfg.Ticket.TotalTickets}");
+    Console.WriteLine($"  Ticketing: SeatMapId={SeatMapRequestPacket.Id}/{SeatMapResponsePacket.Id}  ReserveId={TicketReserveRequestPacket.Id}  PayId={TicketPayRequestPacket.Id}  ResultId={TicketResultPacket.Id}  grid={cfg.Ticket.Rows}×{cfg.Ticket.Cols}");
 Console.WriteLine($"  Enter: 현재 세션 목록 출력 | 'q'+Enter: 서버 종료");
 
 // 주기 HP 브로드캐스트 Task: 200ms마다 전체 클라에 현재 HP 전송.

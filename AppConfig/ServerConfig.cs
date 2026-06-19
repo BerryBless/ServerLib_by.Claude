@@ -73,8 +73,17 @@ public sealed class ServerFeatures
 /// </summary>
 public sealed class TicketConfig
 {
-    /// <summary>전체 티켓(슬롯) 수입니다. 기본 3개.</summary>
-    public int TotalTickets { get; set; } = 3;
+    /// <summary>
+    /// 좌석 배치 행 수입니다. 기본 2행.
+    /// 전체 좌석 수 = <see cref="Rows"/> × <see cref="Cols"/> 이며 255 이하여야 합니다.
+    /// </summary>
+    public int Rows { get; set; } = 2;
+
+    /// <summary>
+    /// 좌석 배치 열 수입니다. 기본 3열.
+    /// 전체 좌석 수 = <see cref="Rows"/> × <see cref="Cols"/> 이며 255 이하여야 합니다.
+    /// </summary>
+    public int Cols { get; set; } = 3;
 
     /// <summary>결제 시뮬레이션 지연(밀리초)입니다. 기본 300ms.</summary>
     public int PaymentDelayMs { get; set; } = 300;
