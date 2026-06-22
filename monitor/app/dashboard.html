@@ -83,6 +83,22 @@
     }
     .thread-table td { padding: 2px 0; font-variant-numeric: tabular-nums; }
     .note { font-size: 0.73rem; color: #64748b; margin-top: 5px; }
+
+    /* ── Seat map grid ── */
+    .seat-grid { display: grid; gap: 4px; margin: 8px 0; }
+    .seat-cell {
+      width: 32px; height: 32px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.62rem; font-weight: 700; color: #fff;
+      user-select: none;
+    }
+    .seat-cell.free     { background: #166534; color: #4ade80; }  /* 초록 */
+    .seat-cell.reserved { background: #78350f; color: #fcd34d; }  /* 앰버 */
+    .seat-cell.sold     { background: #1e3a5f; color: #93c5fd; }  /* 파랑 */
+    .seat-cell.unknown  { background: #374151; color: #9ca3af; }  /* 회색 */
+    .seat-legend { display: flex; gap: 12px; margin-bottom: 6px; font-size: 0.72rem; }
+    .seat-legend span { display: flex; align-items: center; gap: 4px; }
+    .seat-legend .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
   </style>
 </head>
 <body>
@@ -161,6 +177,38 @@
         `<tr><td>${t.id}</td><td>${fmtPct(t.cpuPercent)}</td></tr>`
       ).join('');
 
+      /* ticketing section — rendered only when sn.ticket is present */
+      const tk    = sn.ticket;
+      let ticketHtml = '';
+      if (tk) {
+        const seatLabels = ['free', 'reserved', 'sold']; // 0=Free, 1=Reserved, 2=Sold CSS 클래스 매핑
+        const cols = tk.cols || 1;
+
+        /* seat map cells */
+        const cells = (tk.seats || []).map((state, idx) => {
+          const row  = Math.floor(idx / cols);
+          const col  = idx % cols;
+          const cls  = seatLabels[state] ?? 'unknown';
+          return `<div class="seat-cell ${cls}" title="R${row}C${col}">${row},${col}</div>`;
+        }).join('');
+
+        ticketHtml = `
+          <div class="section-title">🎫 티켓팅 좌석맵 (${tk.rows}행 × ${tk.cols}열 = ${tk.total}석)</div>
+          <div class="seat-legend">
+            <span><span class="dot" style="background:#166534"></span>빈석 ${fmt(tk.free)}</span>
+            <span><span class="dot" style="background:#78350f"></span>예약중 ${fmt(tk.reserved)}</span>
+            <span><span class="dot" style="background:#1e3a5f"></span>확정 ${fmt(tk.sold)}</span>
+          </div>
+          <div class="seat-grid" style="grid-template-columns:repeat(${cols},32px)">${cells}</div>
+          <div class="section-title">티켓팅 KPI (누적)</div>
+          <div class="row"><span class="row-label">예약 성공 (Reserved)</span><span class="row-value">${fmt(tk.totalReserved)}</span></div>
+          <div class="row"><span class="row-label">결제 확정 (Confirmed)</span><span class="row-value">${fmt(tk.totalConfirmed)}</span></div>
+          <div class="row"><span class="row-label">결제 실패 반납</span><span class="row-value" style="color:#f87171">${fmt(tk.totalPaymentFailed)}</span></div>
+          <div class="row"><span class="row-label">이탈 반납 (Abandoned)</span><span class="row-value" style="color:#fb923c">${fmt(tk.totalAbandoned)}</span></div>
+          <div class="row"><span class="row-label">TTL 만료 반납</span><span class="row-value" style="color:#a78bfa">${fmt(tk.totalExpired)}</span></div>
+          <div class="row"><span class="row-label">좌석 경합 (SeatTaken)</span><span class="row-value" style="color:#94a3b8">${fmt(tk.totalSeatTaken)}</span></div>`;
+      }
+
       return `<div class="card">
         <div class="card-header">
           <span class="badge online">ONLINE</span>
@@ -220,6 +268,8 @@
           <thead><tr><th>TID</th><th>CPU%</th></tr></thead>
           <tbody>${threadRows}</tbody>
         </table>
+
+        ${ticketHtml}
       </div>`;
     }
 

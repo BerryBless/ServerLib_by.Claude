@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Xunit;
 using ServerLib.Core.Serialization.Packets;
 using Ticketing;
@@ -570,5 +571,235 @@ public class TicketInventoryConcurrencyTests
 
         Assert.Equal(6, reservedCount);               // 정확히 6석 예약 성공
         Assert.Equal(concurrency - 6, seatTakenCount);
+    }
+
+    // ─────── MetricsSnapshot / 누적 카운터 검증 ───────
+
+    // ㉙ MetricsSnapshot: 초기 상태 — 전체 Free, 카운터 0
+    [Fact]
+    public void MetricsSnapshot_initial_all_free_counters_zero()
+    {
+        var inv = Make2D(2, 3); // 6석
+
+        var m = inv.MetricsSnapshot();
+
+        Assert.Equal(2, m.Rows);
+        Assert.Equal(3, m.Cols);
+        Assert.Equal(6, m.Total);
+        Assert.Equal(6, m.Free);
+        Assert.Equal(0, m.Reserved);
+        Assert.Equal(0, m.Sold);
+        // 모든 누적 카운터 초기값 0
+        Assert.Equal(0, m.TotalReserved);
+        Assert.Equal(0, m.TotalConfirmed);
+        Assert.Equal(0, m.TotalPaymentFailed);
+        Assert.Equal(0, m.TotalAbandoned);
+        Assert.Equal(0, m.TotalExpired);
+        Assert.Equal(0, m.TotalSeatTaken);
+    }
+
+    // ㉚ MetricsSnapshot: 현재 상태 합 = Total 불변식
+    [Fact]
+    public void MetricsSnapshot_state_sum_equals_total()
+    {
+        var inv  = Make2D(2, 3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+        var ctx2 = new TicketContext("u2");
+
+        inv.TryReserve(ctx0, 0); // seat 0 → Reserved
+        inv.TryReserve(ctx1, 1); // seat 1 → Reserved
+        inv.Confirm(ctx0);       // seat 0 → Sold
+
+        var m = inv.MetricsSnapshot();
+
+        // Free + Reserved + Sold == Total
+        Assert.Equal(m.Total, m.Free + m.Reserved + m.Sold);
+        Assert.Equal(4, m.Free);
+        Assert.Equal(1, m.Reserved);
+        Assert.Equal(1, m.Sold);
+    }
+
+    // ㉛ TotalReserved: CAS 성공 횟수만 누적
+    [Fact]
+    public void TotalReserved_counts_only_cas_successes()
+    {
+        var inv  = Make1xN(3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+        var ctx2 = new TicketContext("u2");
+
+        inv.TryReserve(ctx0, 0); // 성공
+        inv.TryReserve(ctx1, 1); // 성공
+        inv.TryReserve(ctx2, 2); // 성공
+
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(3, m.TotalReserved);
+    }
+
+    // ㉜ TotalSeatTaken: CAS 실패 경합만 카운트, 범위 오류는 제외
+    [Fact]
+    public void TotalSeatTaken_counts_only_cas_contention_not_range_errors()
+    {
+        var inv  = Make1xN(3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+        var ctx2 = new TicketContext("u2");
+
+        // 범위 초과 요청 — SeatTaken을 반환하지만 경합이 아니므로 카운트 안 됨
+        inv.TryReserve(ctx0, -1);  // 범위 밖
+        inv.TryReserve(ctx1, 99);  // 범위 밖
+
+        var mBefore = inv.MetricsSnapshot();
+        Assert.Equal(0, mBefore.TotalSeatTaken); // 범위 오류는 카운트 안 됨
+
+        // 좌석 0을 먼저 점유한 뒤 두 번째 요청 → CAS 실패 = 경합
+        inv.TryReserve(ctx0, 0); // 성공
+        inv.TryReserve(ctx2, 0); // CAS 실패 = 경합
+
+        var mAfter = inv.MetricsSnapshot();
+        Assert.Equal(1, mAfter.TotalSeatTaken); // 경합 1건만
+        Assert.Equal(1, mAfter.TotalReserved);  // 성공 1건
+    }
+
+    // ㉝ TotalConfirmed: Confirm 성공 횟수 카운트
+    [Fact]
+    public void TotalConfirmed_counts_successful_confirms()
+    {
+        var inv  = Make1xN(3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+
+        inv.TryReserve(ctx0, 0);
+        inv.TryReserve(ctx1, 1);
+        inv.Confirm(ctx0); // 성공
+        inv.Confirm(ctx0); // 중복 Confirm → NotReserved, 카운트 안 됨
+        inv.Confirm(ctx1); // 성공
+
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(2, m.TotalConfirmed); // 성공만 2건
+    }
+
+    // ㉞ TotalPaymentFailed: Release 성공 횟수 카운트
+    [Fact]
+    public void TotalPaymentFailed_counts_successful_releases()
+    {
+        var inv  = Make1xN(3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+
+        inv.TryReserve(ctx0, 0);
+        inv.Release(ctx0); // 성공
+        inv.Release(ctx0); // 중복 Release → NotReserved, 카운트 안 됨
+
+        inv.TryReserve(ctx1, 1);
+        inv.Release(ctx1); // 성공
+
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(2, m.TotalPaymentFailed); // 성공만 2건
+    }
+
+    // ㉟ TotalAbandoned: ReleaseByContext 실제 반납 횟수 카운트
+    [Fact]
+    public void TotalAbandoned_counts_actual_releaseByContext()
+    {
+        var inv  = Make1xN(3);
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+
+        inv.ReleaseByContext(null);    // null — no-op, 카운트 안 됨
+        inv.ReleaseByContext(ctx0);    // SlotIndex=-1 → no-op, 카운트 안 됨
+        inv.TryReserve(ctx0, 0);
+        inv.ReleaseByContext(ctx0);    // 실제 반납 성공
+
+        inv.TryReserve(ctx1, 1);
+        inv.ReleaseByContext(ctx1);    // 실제 반납 성공
+        inv.ReleaseByContext(ctx1);    // 이미 소비됨 → no-op, 카운트 안 됨
+
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(2, m.TotalAbandoned); // 성공만 2건
+    }
+
+    // ㊱ TotalExpired: SweepExpired 반납 횟수 카운트
+    [Fact]
+    public void TotalExpired_counts_ttl_sweeps()
+    {
+        var inv  = new TicketInventory(1, 3, TimeSpan.FromMilliseconds(1));
+        var ctx0 = new TicketContext("u0");
+        var ctx1 = new TicketContext("u1");
+
+        inv.TryReserve(ctx0, 0);
+        inv.TryReserve(ctx1, 1);
+        Thread.Sleep(20); // TTL(1ms) 충분히 초과
+
+        int swept = inv.SweepExpired();
+        Assert.Equal(2, swept);
+
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(2, m.TotalExpired); // 2건 만료 반납
+    }
+
+    // ㊲ 동시 예약 — TotalReserved + TotalSeatTaken == 시도 수
+    [Fact]
+    public async Task Concurrent_reserve_reserved_plus_seattaken_equals_attempts()
+    {
+        var inv         = Make1xN(3); // 3석
+        int concurrency = 64;
+        ThreadPool.SetMinThreads(concurrency, concurrency);
+
+        var barrier = new Barrier(concurrency);
+        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        {
+            var ctx = new TicketContext($"user{i}");
+            barrier.SignalAndWait();
+            inv.TryReserve(ctx, i % 3); // 3개 좌석 순환 경쟁
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        var m = inv.MetricsSnapshot();
+
+        // Reserved 성공 + SeatTaken(경합) = 총 시도 수
+        Assert.Equal(concurrency, (int)(m.TotalReserved + m.TotalSeatTaken));
+        Assert.Equal(3, m.TotalReserved); // 3석만 성공
+        Assert.Equal(concurrency - 3, (int)m.TotalSeatTaken);
+    }
+
+    // ㊳ Base64 함정 회귀 방지 — int[] 투영 후 JSON 직렬화 시 숫자 배열로 나와야 함
+    /// <summary>
+    /// System.Text.Json이 <c>byte[]</c>를 Base64 문자열로 직렬화하는 함정을 방지하는 회귀 테스트.
+    /// Server/Program.cs CPU 샘플러에서 <c>Array.ConvertAll(rawBytes, b =&gt; (int)b)</c>로 투영한 뒤
+    /// 직렬화하면 대시보드가 <c>[0,1,2]</c>를 수신해야 하며 <c>"AAEC…"</c> Base64 문자열이어선 안 된다.
+    /// </summary>
+    [Fact]
+    public void Seats_serialized_as_int_array_not_base64_string()
+    {
+        var inv = Make2D(2, 3); // 2행×3열 = 6석
+        var ctx0 = new TicketContext("user0");
+        var ctx1 = new TicketContext("user1");
+
+        inv.TryReserve(ctx0, 0); // seatId 0 → Reserved(1)
+        inv.Confirm(ctx0);       // seatId 0 → Sold(2)
+        inv.TryReserve(ctx1, 1); // seatId 1 → Reserved(1)
+        // seatId 2~5 → Free(0)
+
+        // Server/Program.cs 산출 로직 재현: byte[] → int[] 투영
+        var rawBytes = new byte[6];
+        inv.SnapshotStates(rawBytes);
+        // int[]: System.Text.Json이 byte[]를 Base64 문자열로 직렬화하므로 int[]로 투영 필수
+        int[] seatInts = Array.ConvertAll(rawBytes, b => (int)b);
+
+        // 직렬화 단언: seats 값이 숫자 배열 리터럴로 나와야 함
+        var json = JsonSerializer.Serialize(new { seats = seatInts });
+
+        // byte[] 그대로라면 "seats":"AAEC..." 형태. int[]면 "seats":[2,1,0,0,0,0]
+        Assert.Contains("\"seats\":[", json);           // 배열 시작 확인
+        Assert.DoesNotContain("\"seats\":\"", json);    // Base64 문자열 시작이 없어야 함
+
+        // 좌석 0=Sold(2), 1=Reserved(1), 나머지=Free(0) 값 확인
+        Assert.Equal(2, seatInts[0]); // Sold
+        Assert.Equal(1, seatInts[1]); // Reserved
+        for (int i = 2; i < 6; i++)
+            Assert.Equal(0, seatInts[i]); // Free
     }
 }

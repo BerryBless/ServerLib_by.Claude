@@ -7,7 +7,7 @@
 **원칙:** Interface는 순수 추상화만, Core는 구현만 포함. 의존성 방향은 Core → Interface (역방향 금지).
 
 **예제 코드 위치:** 각 프로젝트의 `Program.cs`가 라이브러리 사용 예제 역할을 한다.
-- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`(`RequireAuth` 토글로 미인증 드롭 가능), 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력; `LoginRequestPacket`(Id=10)·`AuthTokenPacket`(Id=12) 병행 처리·`[AUTH+]`/`[GATE+]` 로그; `EnableTicketing` 토글로 티켓팅 모드 전환 — 더미 로그인(Id=10)·`SeatMapRequestPacket`(Id=16) 좌석맵 조회·`TicketReserveRequestPacket`(Id=13, Row/Col 좌석지정)·`TicketPayRequestPacket`(Id=14) 처리·`TicketResultPacket`(Id=15) 응답(SeatTaken 포함), 이탈 시 자동 슬롯 반납, 1초 TTL 스위퍼 Task, 기본 2×3 그리드(6석)
+- `Server/Program.cs` — 보스 몹 전투 호스트 예제: `MobManager`(HP 100,000), `DamagePacket`(Id=5) 수신 → `ApplyDamage`(`RequireAuth` 토글로 미인증 드롭 가능), 200ms 주기 `MobHpPacket`(Id=6) 브로드캐스트, 사망 시 `MobDeathPacket`(Id=7) 즉시 브로드캐스트·리스폰, `ISessionRegistry` 강제 활성, `[STATS]` hp/gen 신호 출력; `LoginRequestPacket`(Id=10)·`AuthTokenPacket`(Id=12) 병행 처리·`[AUTH+]`/`[GATE+]` 로그; `EnableTicketing` 토글로 티켓팅 모드 전환 — 더미 로그인(Id=10)·`SeatMapRequestPacket`(Id=16) 좌석맵 조회·`TicketReserveRequestPacket`(Id=13, Row/Col 좌석지정)·`TicketPayRequestPacket`(Id=14) 처리·`TicketResultPacket`(Id=15) 응답(SeatTaken 포함), 이탈 시 자동 슬롯 반납, 1초 TTL 스위퍼 Task, 기본 2×3 그리드(6석); **모니터링:** `[TICKET]` 콘솔 신호(free/reserved/sold + 누적 KPI 6종)·`:9100` JSON `snapshot.ticket` 섹션(seats=int[] — byte[]→Base64 함정 회피)으로 실시간 좌석맵·KPI를 웹 대시보드에 전달
 - `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지; `EnableAuthGating` 토글로 T0가 AuthServer(9200)→토큰→게임서버 `AuthTokenPacket` 제시 데모; `EnableTicketing` 토글로 티켓팅 데모 전환 — 7클라 동시 **좌석지정** 예약(로그인→좌석맵조회→좌석지정→예약·SeatTaken 시 재선택 최대5회, `FailingClientIndex`=0이 `SimulateFailure=true`로 결제 실패 후 좌석맵 재조회·재예약·재결제 시연), `Channel<byte[]>` inbox로 `OnReceived` 콜백 비동기 처리, 최종 Confirmed==min(ClientCount,TotalSeats) 불변식 출력
 - `AuthServer/Program.cs` — 독립 인증 서버 예제(port 9200): `ServerNet.CreateListener()`(registry 생략) + `LoginService` 전담 → `LoginRequestPacket`(Id=10)만 처리, Redis 토큰 발급
 - `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
@@ -77,6 +77,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/soak_test_0618.md` | 2026-06-18 | 소크 테스트 하네스 설계 (N개 클라 연결 churn·[STATS] 파싱·Hard 판정·child 프로세스 아키텍처) |
 | `plan/ticketing_seat_designation_0619.md` | 2026-06-19 | 좌석지정 예약 (2D 좌석·SeatMapRequest/Response·SeatTaken, TryReserve(seatId), SnapshotStates, 144개 테스트) |
 | `plan/ticketing_seat_designation_review_0620.md` | 2026-06-20 | 좌석지정 예약 7차원 종합 코드 리뷰 (ARCH-02 별칭버그·SEC-NEW-01 SimulateFailure노출·STYLE-03 2D테스트누락 등 High 4건, 종합 77점) |
+| `plan/ticketing_monitoring_0622.md` | 2026-06-22 | 티켓팅 모니터링 (lock-free 누적 카운터·MetricsSnapshot·[TICKET] 콘솔 라인·JSON ticket 섹션·대시보드 좌석맵+KPI) |
 
 ---
 

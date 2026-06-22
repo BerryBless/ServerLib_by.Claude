@@ -498,6 +498,15 @@ _ = Task.Run(async () =>
                           $"allocBytes={GC.GetTotalAllocatedBytes()} " +
                           $"gen0={GC.CollectionCount(0)} " +
                           $"gen2={GC.CollectionCount(2)}");
+        // [TICKET]: 티켓팅 모드 전용 — 좌석 현황 + 누적 KPI 신호. [STATS]는 SoakTest 파싱 계약이므로 수정 금지.
+        if (ticketInventory is not null)
+        {
+            var tm = ticketInventory.MetricsSnapshot();
+            Console.WriteLine($"[TICKET] free={tm.Free} reserved={tm.Reserved} sold={tm.Sold} " +
+                              $"reserved_total={tm.TotalReserved} confirmed={tm.TotalConfirmed} " +
+                              $"payfail={tm.TotalPaymentFailed} abandon={tm.TotalAbandoned} " +
+                              $"expired={tm.TotalExpired} seattaken={tm.TotalSeatTaken}");
+        }
     }
 });
 
@@ -557,6 +566,27 @@ _ = Task.Run(async () =>
         var gcInfo = GC.GetGCMemoryInfo();
         var (hp, maxHp, gen) = mob.Snapshot();
 
+        // ── 티켓팅 스냅샷 ──────────────────────────────────────────────────────
+        // int[]: System.Text.Json이 byte[]를 Base64 문자열로 직렬화하므로 int[]로 투영 필수.
+        // SnapshotStates → Array.ConvertAll: 저빈도 관리 경로이므로 1회 할당 허용(기존 snapshot 익명 객체 패턴과 동일).
+        object? ticketSection = null;
+        if (ticketInventory is not null)
+        {
+            var tm = ticketInventory.MetricsSnapshot();
+            var rawBytes = new byte[tm.Total];
+            ticketInventory.SnapshotStates(rawBytes);
+            var seatInts = Array.ConvertAll(rawBytes, b => (int)b);
+            ticketSection = new
+            {
+                rows = tm.Rows, cols = tm.Cols, total = tm.Total,
+                free = tm.Free, reserved = tm.Reserved, sold = tm.Sold,
+                totalReserved = tm.TotalReserved, totalConfirmed = tm.TotalConfirmed,
+                totalPaymentFailed = tm.TotalPaymentFailed, totalAbandoned = tm.TotalAbandoned,
+                totalExpired = tm.TotalExpired, totalSeatTaken = tm.TotalSeatTaken,
+                seats = seatInts   // int[] — 0=Free, 1=Reserved, 2=Sold; byte[]로 두면 Base64 문자열로 직렬화됨
+            };
+        }
+
         var snapshot = new
         {
             timestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -577,7 +607,8 @@ _ = Task.Run(async () =>
                 cpuTotalPercent        = cpuTotalPct,          // double?   — null on non-Windows
                 memoryLoadBytes        = gcInfo.MemoryLoadBytes,
                 totalAvailableMemoryBytes = gcInfo.TotalAvailableMemoryBytes
-            }
+            },
+            ticket = ticketSection   // object? — null이면 모니터 대시보드의 티켓팅 섹션을 숨김
         };
 
         // JsonSerializer.Serialize: 리플렉션 기반 — 저빈도 관리 경로이므로 할당 허용

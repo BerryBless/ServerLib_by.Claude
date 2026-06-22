@@ -60,6 +60,16 @@ public sealed class TicketInventory
     // long: Stopwatch.GetTimestamp() delta로 TTL 판단. Stopwatch 틱은 커널 전환 없는 단조 시계(시스템 시각 변경에 무관)
     private readonly long _ttlTicks;
 
+    // ── 누적 이벤트 카운터 ─────────────────────────────────────────────────────
+    // long: Interlocked.Increment(ref long)은 CPU LOCK XADD 명령으로 힙 할당 없이 원자 증가.
+    // 읽기 시 Interlocked.Read(ref long) 필수 — x86 32비트에서 long torn-read 방지.
+    private long _totalReserved;      // TryReserve CAS 성공 건수 (예약 누적)
+    private long _totalSeatTaken;     // TryReserve CAS 실패 건수 (좌석 경합, 범위 오류 제외)
+    private long _totalConfirmed;     // Confirm 성공 건수 (결제 확정 누적)
+    private long _totalPaymentFailed; // Release 성공 건수 (결제 실패 반납 누적)
+    private long _totalAbandoned;     // ReleaseByContext 실제 반납 건수 (이탈·연결 해제 누적)
+    private long _totalExpired;       // SweepExpired 반납 건수 (TTL 만료 누적)
+
     /// <summary>행 수입니다.</summary>
     public int Rows => _rows;
 
@@ -148,13 +158,19 @@ public sealed class TicketInventory
         // CAS: Free(0) → Reserved(1). 성공하면 이 스레드가 해당 좌석을 점유한 유일한 예약자.
         // 다른 스레드가 먼저 CAS에 성공하면 이 CAS는 실패(반환값 != Free) → SeatTaken 반환.
         if (Interlocked.CompareExchange(ref _states[seatId], Reserved, Free) != Free)
+        {
+            // CAS 실패 = 좌석 경합: 다른 스레드가 먼저 예약 성공 — 경합 카운터만 증가(범위 오류는 카운트 안 함)
+            Interlocked.Increment(ref _totalSeatTaken);
             return (TicketStatus.SeatTaken, seatId);
+        }
 
         // 소유자 참조 기록: Volatile.Write로 스위퍼 스레드에 가시성 보장(발행 순서 중요)
         Volatile.Write(ref _owners[seatId], ctx);
         Volatile.Write(ref _reservedAtTicks[seatId], nowTicks);
         // SlotIndex를 마지막에 발행: 이 쓰기가 관찰되면 위 두 쓰기도 이미 완료된 것이 보장됨
         Volatile.Write(ref ctx.SlotIndex, seatId);
+        // CAS 성공 = 예약 완료: 예약 누적 카운터 증가
+        Interlocked.Increment(ref _totalReserved);
         return (TicketStatus.Reserved, seatId);
     }
 
@@ -234,6 +250,8 @@ public sealed class TicketInventory
         // 스위퍼가 null 참조를 읽어 불필요한 ReleaseByContext를 시도하는 것을 방지한다.
         Volatile.Write(ref _owners[slot], null);
         Interlocked.Exchange(ref _states[slot], Sold);
+        // 결제 확정 완료: 확정 누적 카운터 증가
+        Interlocked.Increment(ref _totalConfirmed);
         return (TicketStatus.Confirmed, slot);
     }
 
@@ -253,6 +271,8 @@ public sealed class TicketInventory
 
         Volatile.Write(ref _owners[slot], null);
         Interlocked.Exchange(ref _states[slot], Free);
+        // 결제 실패 반납 완료: 결제실패 누적 카운터 증가
+        Interlocked.Increment(ref _totalPaymentFailed);
         return (TicketStatus.Released, slot);
     }
 
@@ -274,6 +294,8 @@ public sealed class TicketInventory
 
         Volatile.Write(ref _owners[slot], null);
         Interlocked.Exchange(ref _states[slot], Free);
+        // 이탈·연결 해제로 인한 반납 완료: 이탈 누적 카운터 증가
+        Interlocked.Increment(ref _totalAbandoned);
     }
 
     /// <summary>
@@ -317,8 +339,84 @@ public sealed class TicketInventory
             Volatile.Write(ref _owners[i], null);
             Interlocked.Exchange(ref _states[i], Free);
             released++;
+            // TTL 만료 반납 완료: 만료 누적 카운터 증가
+            Interlocked.Increment(ref _totalExpired);
         }
 
         return released;
     }
+
+    /// <summary>
+    /// 모니터링용 지표 스냅샷(<see cref="TicketMetrics"/>)을 반환합니다.
+    /// 현재 좌석 상태를 1-pass로 스캔하고 누적 카운터를 원자적으로 읽습니다.
+    /// </summary>
+    /// <returns>
+    /// 현재 Free/Reserved/Sold 좌석 수와 누적 이벤트 카운터를 담은 <see cref="TicketMetrics"/> 구조체입니다.
+    /// </returns>
+    /// <remarks>
+    /// <b>[성능 및 동시성 제약 조건]</b>
+    /// <list type="bullet">
+    /// <item><description>
+    /// <b>Thread Safety:</b> Thread-safe. 슬롯 상태는 <c>Volatile.Read</c>,
+    /// 누적 카운터는 <c>Interlocked.Read</c>로 읽어 가시성을 보장합니다.
+    /// </description></item>
+    /// <item><description>
+    /// <b>Memory Allocation:</b> Zero-allocation.
+    /// <see cref="TicketMetrics"/>는 stack-allocated readonly record struct이므로 힙 할당 없음.
+    /// </description></item>
+    /// <item><description>
+    /// <b>Blocking:</b> Non-blocking.
+    /// </description></item>
+    /// <item><description>
+    /// <b>비원자성 경고:</b> 좌석 상태 스캔(free/reserved/sold)과 누적 카운터 읽기는 서로 원자적이지 않습니다.
+    /// 모니터링 목적으로만 사용하며,
+    /// <c>Reserved == TotalReserved - TotalConfirmed - …</c> 같은 파생 불변식을 표시하거나 단언하지 마십시오.
+    /// 부하 중 어느 순간에도 성립하지 않습니다.
+    /// </description></item>
+    /// </list>
+    /// </remarks>
+    public TicketMetrics MetricsSnapshot()
+    {
+        int free = 0, reserved = 0, sold = 0;
+        for (int i = 0; i < _totalTickets; i++)
+        {
+            // Volatile.Read: 최신 가시성 보장 — 완전한 원자적 일관성은 없지만 모니터링 스냅샷으로 충분
+            switch (Volatile.Read(ref _states[i]))
+            {
+                case Free:     free++;     break;
+                case Reserved: reserved++; break;
+                case Sold:     sold++;     break;
+            }
+        }
+        return new TicketMetrics(
+            Rows:               _rows,
+            Cols:               _cols,
+            Total:              _totalTickets,
+            Free:               free,
+            Reserved:           reserved,
+            Sold:               sold,
+            // Interlocked.Read: x86 32비트에서 long torn-read 방지 — 64비트에서도 일관성 명시적 보장
+            TotalReserved:      Interlocked.Read(ref _totalReserved),
+            TotalConfirmed:     Interlocked.Read(ref _totalConfirmed),
+            TotalPaymentFailed: Interlocked.Read(ref _totalPaymentFailed),
+            TotalAbandoned:     Interlocked.Read(ref _totalAbandoned),
+            TotalExpired:       Interlocked.Read(ref _totalExpired),
+            TotalSeatTaken:     Interlocked.Read(ref _totalSeatTaken));
+    }
 }
+
+/// <summary>
+/// <see cref="TicketInventory.MetricsSnapshot"/>이 반환하는 모니터링용 지표 스냅샷입니다.
+/// 현재 상태별 좌석 수(Free/Reserved/Sold)와 누적 이벤트 카운터를 포함합니다.
+/// </summary>
+/// <remarks>
+/// <b>비원자성:</b> 누적 카운터와 현재 상태 스캔은 서로 원자적이지 않습니다.
+/// 모니터링 용도로 충분하나, <c>Reserved == TotalReserved - TotalConfirmed - …</c> 같은
+/// 파생 불변식을 표시하거나 단언하지 마십시오 — 부하 중 어느 순간에도 성립하지 않습니다.
+/// </remarks>
+public readonly record struct TicketMetrics(
+    int Rows, int Cols, int Total,
+    int Free, int Reserved, int Sold,
+    long TotalReserved, long TotalConfirmed,
+    long TotalPaymentFailed, long TotalAbandoned,
+    long TotalExpired, long TotalSeatTaken);
