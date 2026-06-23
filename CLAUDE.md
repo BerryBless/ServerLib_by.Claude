@@ -78,6 +78,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/ticketing_seat_designation_0619.md` | 2026-06-19 | 좌석지정 예약 (2D 좌석·SeatMapRequest/Response·SeatTaken, TryReserve(seatId), SnapshotStates, 144개 테스트) |
 | `plan/ticketing_seat_designation_review_0620.md` | 2026-06-20 | 좌석지정 예약 7차원 종합 코드 리뷰 (ARCH-02 별칭버그·SEC-NEW-01 SimulateFailure노출·STYLE-03 2D테스트누락 등 High 4건, 종합 77점) |
 | `plan/ticketing_monitoring_0622.md` | 2026-06-22 | 티켓팅 모니터링 (lock-free 누적 카운터·MetricsSnapshot·[TICKET] 콘솔 라인·JSON ticket 섹션·대시보드 좌석맵+KPI) |
+| `plan/ticketing_monitoring_review_0623.md` | 2026-06-23 | 티켓팅 모니터링 7차원 종합 코드 리뷰 (SEC-MON-01 관리포트 무인증 노출·ARCH-NEW-01 회귀테스트 생산경로 우회 등 High 1건, 종합 86점) |
 
 ---
 
