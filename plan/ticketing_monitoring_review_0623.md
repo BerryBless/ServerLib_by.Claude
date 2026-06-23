@@ -126,3 +126,22 @@ commit 381d7f8의 lock-free 누적 카운터 설계(`Interlocked.Increment/Read`
 - **필수:** SEC-MON-01 관리 포트 루프백 바인딩 (루프백 제한 1줄)
 - **권장:** ARCH-NEW-01 ProjectSeatStates() 캡슐화 · SEC-MON-03 XSS esc() 헬퍼 · STYLE-01 테스트 헬퍼 추출
 - **기술부채 등록:** ARCH-01(도메인 오염) · SEC-NEW-02(TLS) · SEC-NEW-03(속도 제한)
+
+---
+
+## 수정 완료 내역 (2026-06-23 — 리뷰 당일 적용)
+
+| 항목 | 심각도 | 수정 내용 | 수정 파일 |
+|------|--------|-----------|-----------|
+| **SEC-MON-01** | High ✅ | `IServerListener.Start(int, IPAddress)` 오버로드 추가, `adminListener`를 `IPAddress.Loopback`으로 기동 — 원격 접근 원천 차단 | `IServerListener.cs`, `SocketPipelineListener.cs`, `Server/Program.cs` |
+| **SEC-MON-02** | Medium ✅ | `adminListener.MaxConnections=10`, `IdleTimeout=60s` 적용 — 소켓 핸들 고갈 방지 | `Server/Program.cs` |
+| **SEC-MON-03** | Medium ✅ | `dashboard.html`에 `esc()` HTML 이스케이프 헬퍼 추가, `s.name`·`s.host` 삽입부 교체 | `monitor/app/dashboard.html` |
+| **SEC-NEW-03** | Medium ✅ | `TicketContext`에 슬라이딩 윈도우 속도 제한(60초/10회) 필드 추가, Reserve 핸들러 검증, `TicketStatus.RateLimited=8` 신규, 클라이언트 처리 | `TicketContext.cs`, `TicketStatus.cs`, `Server/Program.cs`, `Client/Program.cs` |
+| **ARCH-NEW-01** | Medium ✅ | `TicketInventory.ProjectSeatStates()` 캡슐화 — `Program.cs`·테스트 ㊳ 동일 경로 공유, 회귀 보증 회복 | `TicketInventory.cs`, `Server/Program.cs`, `TicketInventoryConcurrencyTests.cs` |
+| **STYLE-01** | Medium ✅ | `RunConcurrentAsync` 헬퍼 추출, 테스트 ①②㉘㊲ 보일러플레이트 제거 (4→1 중복 해소) | `TicketInventoryConcurrencyTests.cs` |
+
+**미적용 항목 (기술부채 유지):**
+- **SEC-NEW-02** — TLS(`SslStream` 통합): 인프라 변경으로 별도 사이클에서 처리
+- **ARCH-01** — 도메인 오염(`TicketInventory.cs` using ServerLib): `TicketStatus` 이동 시 패킷 프로토콜 영향 별도 검토 필요
+
+**수정 후 예상 종합 점수: ≥ 92 / 100** (High 1건 제거 + Medium 5건 해소, TLS·도메인 오염 기술부채 잔존)
