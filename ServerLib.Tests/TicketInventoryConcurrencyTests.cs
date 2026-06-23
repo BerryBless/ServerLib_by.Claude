@@ -19,35 +19,45 @@ public class TicketInventoryConcurrencyTests
     private static TicketInventory Make2D(int rows, int cols) =>
         new TicketInventory(rows, cols, TimeSpan.FromSeconds(30));
 
+    /// <summary>
+    /// N개 Task를 Barrier로 동시 출발시켜 동시성 시나리오를 실행하고 결과 배열을 반환합니다.
+    /// </summary>
+    /// <param name="concurrency">동시 Task 수.</param>
+    /// <param name="work">인덱스를 받아 (status, slot) 튜플을 반환하는 작업. Barrier 통과 직후 호출됩니다.</param>
+    private static async Task<(TicketStatus status, int slot)[]> RunConcurrentAsync(
+        int concurrency,
+        Func<int, (TicketStatus status, int slot)> work)
+    {
+        // [LOCK-05] CI 2코어 환경에서 Barrier 동기 블로킹으로 ThreadPool 스레드 고갈 방지
+        ThreadPool.SetMinThreads(concurrency, concurrency);
+        // Barrier: 모든 Task가 준비된 후 동시에 CAS 경쟁을 시작
+        var barrier = new Barrier(concurrency);
+        var results = new (TicketStatus status, int slot)[concurrency];
+        await Task.WhenAll(Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            results[i] = work(i);
+        })));
+        return results;
+    }
+
     // ① 64개 Task 동시 예약 → 정확히 TotalTickets개만 Reserved, 나머지 SeatTaken
     [Fact]
     public async Task Concurrent_reserve_seat_designated_exactly_totalTickets_succeed()
     {
-        var inv      = Make1xN(3); // 3석: seatId 0,1,2
-        int concurrency = 64;
-
-        // [LOCK-05] CI 2코어 환경에서 Barrier 동기 블로킹으로 ThreadPool 스레드 고갈 방지
-        ThreadPool.SetMinThreads(concurrency, concurrency);
-
-        // Barrier: 모든 Task가 준비된 후 동시에 CAS 경쟁을 시작
-        var barrier = new Barrier(concurrency);
-        var results = new (TicketStatus status, int slot)[concurrency];
-
-        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        var inv = Make1xN(3); // 3석: seatId 0,1,2
+        // 64개 Task가 3개 좌석(0,1,2)을 순환 선택 — 각 좌석마다 약 21개 경쟁
+        var results = await RunConcurrentAsync(64, i =>
         {
             var ctx = new TicketContext($"user{i}");
-            barrier.SignalAndWait();
-            // 64개 Task가 3개 좌석(0,1,2)을 순환 선택 — 각 좌석마다 약 21개 경쟁
-            results[i] = inv.TryReserve(ctx, i % 3);
-        })).ToArray();
-
-        await Task.WhenAll(tasks);
+            return inv.TryReserve(ctx, i % 3);
+        });
 
         int reservedCount  = results.Count(r => r.status == TicketStatus.Reserved);
         int seatTakenCount = results.Count(r => r.status == TicketStatus.SeatTaken);
 
         Assert.Equal(3, reservedCount);                    // 좌석 수만큼 성공
-        Assert.Equal(concurrency - 3, seatTakenCount);    // 나머지는 SeatTaken
+        Assert.Equal(64 - 3, seatTakenCount);              // 나머지는 SeatTaken
 
         // 예약된 슬롯 인덱스가 정확히 {0,1,2}인지 검증
         var reservedSlots = results
@@ -62,27 +72,18 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public async Task Concurrent_reserve_same_seat_exactly_one_succeeds()
     {
-        var inv     = Make1xN(3);
-        int concurrency = 50;
-        ThreadPool.SetMinThreads(concurrency, concurrency);
-
-        var barrier = new Barrier(concurrency);
-        var results = new (TicketStatus status, int slot)[concurrency];
-
-        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        var inv = Make1xN(3);
+        var results = await RunConcurrentAsync(50, i =>
         {
             var ctx = new TicketContext($"user{i}");
-            barrier.SignalAndWait();
-            results[i] = inv.TryReserve(ctx, 0); // 모두 좌석 0을 노림
-        })).ToArray();
-
-        await Task.WhenAll(tasks);
+            return inv.TryReserve(ctx, 0); // 모두 좌석 0을 노림
+        });
 
         int reservedCount  = results.Count(r => r.status == TicketStatus.Reserved);
         int seatTakenCount = results.Count(r => r.status == TicketStatus.SeatTaken);
 
         Assert.Equal(1, reservedCount);
-        Assert.Equal(concurrency - 1, seatTakenCount);
+        Assert.Equal(50 - 1, seatTakenCount);
         Assert.Equal(0, results.First(r => r.status == TicketStatus.Reserved).slot);
     }
 
@@ -548,29 +549,20 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public async Task TryReserveByRowCol_concurrent_2d_exactly_totalTickets_succeed()
     {
-        var inv         = Make2D(2, 3); // 6석
-        int concurrency = 30;
-        ThreadPool.SetMinThreads(concurrency, concurrency);
-
-        var barrier = new Barrier(concurrency);
-        var results = new (TicketStatus status, int slot)[concurrency];
-
-        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        var inv = Make2D(2, 3); // 6석
+        var results = await RunConcurrentAsync(30, i =>
         {
             var ctx = new TicketContext($"user{i}");
             int row = (i % 6) / 3; // 2행 순환
             int col = (i % 6) % 3; // 3열 순환
-            barrier.SignalAndWait();
-            results[i] = inv.TryReserveByRowCol(ctx, row, col);
-        })).ToArray();
-
-        await Task.WhenAll(tasks);
+            return inv.TryReserveByRowCol(ctx, row, col);
+        });
 
         int reservedCount  = results.Count(r => r.status == TicketStatus.Reserved);
         int seatTakenCount = results.Count(r => r.status == TicketStatus.SeatTaken);
 
         Assert.Equal(6, reservedCount);               // 정확히 6석 예약 성공
-        Assert.Equal(concurrency - 6, seatTakenCount);
+        Assert.Equal(30 - 6, seatTakenCount);
     }
 
     // ─────── MetricsSnapshot / 누적 카운터 검증 ───────
@@ -743,26 +735,20 @@ public class TicketInventoryConcurrencyTests
     [Fact]
     public async Task Concurrent_reserve_reserved_plus_seattaken_equals_attempts()
     {
-        var inv         = Make1xN(3); // 3석
-        int concurrency = 64;
-        ThreadPool.SetMinThreads(concurrency, concurrency);
-
-        var barrier = new Barrier(concurrency);
-        var tasks = Enumerable.Range(0, concurrency).Select(i => Task.Run(() =>
+        var inv = Make1xN(3); // 3석
+        // 결과 배열은 사용 안 함 — MetricsSnapshot 카운터로 검증
+        await RunConcurrentAsync(64, i =>
         {
             var ctx = new TicketContext($"user{i}");
-            barrier.SignalAndWait();
-            inv.TryReserve(ctx, i % 3); // 3개 좌석 순환 경쟁
-        })).ToArray();
-
-        await Task.WhenAll(tasks);
+            return inv.TryReserve(ctx, i % 3); // 3개 좌석 순환 경쟁
+        });
 
         var m = inv.MetricsSnapshot();
 
-        // Reserved 성공 + SeatTaken(경합) = 총 시도 수
-        Assert.Equal(concurrency, (int)(m.TotalReserved + m.TotalSeatTaken));
+        // Reserved 성공 + SeatTaken(경합) = 총 시도 수 (64회)
+        Assert.Equal(64, (int)(m.TotalReserved + m.TotalSeatTaken));
         Assert.Equal(3, m.TotalReserved); // 3석만 성공
-        Assert.Equal(concurrency - 3, (int)m.TotalSeatTaken);
+        Assert.Equal(64 - 3, (int)m.TotalSeatTaken);
     }
 
     // ㊳ Base64 함정 회귀 방지 — int[] 투영 후 JSON 직렬화 시 숫자 배열로 나와야 함
@@ -783,11 +769,9 @@ public class TicketInventoryConcurrencyTests
         inv.TryReserve(ctx1, 1); // seatId 1 → Reserved(1)
         // seatId 2~5 → Free(0)
 
-        // Server/Program.cs 산출 로직 재현: byte[] → int[] 투영
-        var rawBytes = new byte[6];
-        inv.SnapshotStates(rawBytes);
-        // int[]: System.Text.Json이 byte[]를 Base64 문자열로 직렬화하므로 int[]로 투영 필수
-        int[] seatInts = Array.ConvertAll(rawBytes, b => (int)b);
+        // [ARCH-NEW-01] ProjectSeatStates()를 직접 호출해 생산 경로와 동일 코드를 검증
+        // byte→int 투영이 도메인 계층에 캡슐화되어 Program.cs와 이 테스트가 같은 경로를 공유한다.
+        int[] seatInts = inv.ProjectSeatStates();
 
         // 직렬화 단언: seats 값이 숫자 배열 리터럴로 나와야 함
         var json = JsonSerializer.Serialize(new { seats = seatInts });

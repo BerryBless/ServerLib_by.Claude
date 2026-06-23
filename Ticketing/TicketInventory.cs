@@ -231,6 +231,28 @@ public sealed class TicketInventory
     }
 
     /// <summary>
+    /// 좌석 상태를 <c>int[]</c>로 변환하여 반환합니다.
+    /// <c>System.Text.Json</c>이 <c>byte[]</c>를 Base64 문자열로 직렬화하는 함정을 방지하기 위해
+    /// JSON 직렬화 전 반드시 이 메서드를 사용하십시오.
+    /// </summary>
+    /// <returns>길이 <see cref="TotalTickets"/>의 <c>int[]</c>. 값: <c>0=Free, 1=Reserved, 2=Sold</c>.</returns>
+    /// <remarks>
+    /// <b>[Thread Safety:]</b> Thread-safe. 각 슬롯을 <c>Volatile.Read</c>로 읽습니다.
+    /// 배열 전체의 원자적 일관성은 없습니다 — 모니터링 스냅샷 전용.
+    /// <br/>
+    /// <b>[Memory Allocation:]</b> <c>int[TotalTickets]</c> 1회 힙 할당. 저빈도 모니터링 경로 전용.
+    /// hot path에서는 <see cref="SnapshotStates(Span{byte})"/> + stackalloc 조합을 사용하십시오.
+    /// </remarks>
+    public int[] ProjectSeatStates()
+    {
+        var dest = new int[_totalTickets];
+        for (int i = 0; i < _totalTickets; i++)
+            // Volatile.Read: 최신 가시성 보장 — byte 캐스트 없이 직접 int로 읽어 int[] 반환
+            dest[i] = Volatile.Read(ref _states[i]);
+        return dest;
+    }
+
+    /// <summary>
     /// 결제 성공 후 슬롯을 <c>Sold</c>로 확정합니다.
     /// </summary>
     /// <param name="ctx">결제를 완료한 세션의 컨텍스트입니다.</param>

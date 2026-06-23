@@ -37,4 +37,10 @@ public enum TicketStatus : byte
     /// 재조회하여 다른 빈 좌석을 선택하고 예약을 재시도해야 합니다.
     /// </summary>
     SeatTaken = 7,
+
+    /// <summary>
+    /// 예약 요청 속도 제한 초과 — 단시간에 너무 많은 예약 요청이 발생했습니다.
+    /// 클라이언트는 예약을 즉시 중단하고 일정 시간 후 재시도해야 합니다.
+    /// </summary>
+    RateLimited = 8,
 }

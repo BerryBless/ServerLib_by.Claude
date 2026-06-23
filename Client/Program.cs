@@ -374,6 +374,13 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
                     preferSeat = -1; // 다음 시도에서는 아무 빈 좌석이나 선택
                     Console.WriteLine($"  [{i}] 좌석 점유됨(SeatTaken) — 재시도 {attempt + 1}/{maxReserveTries}");
                 }
+                else if (resResult.Status == TicketStatus.RateLimited)
+                {
+                    // 속도 제한 — 서버가 요청을 거부. 즉시 중단 (재시도 없음)
+                    Console.WriteLine($"  [{i}] 속도 제한(RateLimited) — 예약 중단");
+                    Interlocked.Increment(ref soldOut);
+                    return;
+                }
                 else
                 {
                     Console.WriteLine($"  [{i}] 예약 실패({resResult.Status}) — 종료");

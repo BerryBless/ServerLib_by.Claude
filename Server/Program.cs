@@ -295,6 +295,26 @@ listener.OnReceived = async (session, data) =>
         var tctx = session.GetContext<TicketContext>();
         if (tctx is null) return; // 더미 로그인 없이 예약 시도 — 무시
 
+        // [SEC-NEW-03] 세션별 슬라이딩 윈도우 속도 제한 — 60초 내 10회 초과 시 RateLimited 반환
+        // Interlocked.CompareExchange로 윈도우 교체 시도: 실패해도 기존 윈도우 카운터로 안전하게 폴백
+        long nowMs = Environment.TickCount64;
+        long winStart = Volatile.Read(ref tctx.RateLimitWindowStart);
+        if (nowMs - winStart >= TicketContext.RateLimitWindowMs)
+        {
+            if (Interlocked.CompareExchange(ref tctx.RateLimitWindowStart, nowMs, winStart) == winStart)
+                Interlocked.Exchange(ref tctx.RateLimitAttempts, 0);
+        }
+        if (Interlocked.Increment(ref tctx.RateLimitAttempts) > TicketContext.MaxReserveAttemptsPerWindow)
+        {
+            await session.SendAsync(new TicketResultPacket
+            {
+                Status    = TicketStatus.RateLimited,
+                Slot      = TicketResultPacket.NoSlot,
+                Remaining = 0
+            });
+            return;
+        }
+
         var req = serializer.Deserialize<TicketReserveRequestPacket>(data.Span);
         // TryReserveByRowCol: Row/Col 경계 검증과 seatId 변환을 도메인 메서드에 위임
         // Col >= Cols 등 범위 초과 입력은 SeatTaken(-1)으로 거부됨(alias 버그 방지)
@@ -421,7 +441,10 @@ adminListener.OnReceived = async (session, data) =>
         await session.SendAsync(new StatsResponsePacket { Json = statsHolder.Json });
     }
 };
-// 관리 리스너에는 IdleTimeout 미설정 — 모니터가 5초 주기 폴링 시 게임 30s idle-timeout에 끊기지 않게 함
+// [SEC-MON-02] 관리 포트 연결 수·유휴 타임아웃 제한 — 소켓 핸들 고갈 방지
+adminListener.MaxConnections = 10;
+// 관리 리스너에는 IdleTimeout=60s — 모니터 5초 폴링은 유지하면서 좀비 연결 60초 후 해제
+adminListener.IdleTimeout = TimeSpan.FromSeconds(60);
 
 listener.Start(cfg.Port);
 // [SEC-MON-01] 관리 포트는 루프백 전용 — IPAddress.Loopback으로 바인딩해 원격 네트워크 접근 차단
@@ -568,15 +591,13 @@ _ = Task.Run(async () =>
         var (hp, maxHp, gen) = mob.Snapshot();
 
         // ── 티켓팅 스냅샷 ──────────────────────────────────────────────────────
-        // int[]: System.Text.Json이 byte[]를 Base64 문자열로 직렬화하므로 int[]로 투영 필수.
-        // SnapshotStates → Array.ConvertAll: 저빈도 관리 경로이므로 1회 할당 허용(기존 snapshot 익명 객체 패턴과 동일).
+        // [ARCH-NEW-01] ProjectSeatStates(): byte→int 투영을 도메인 계층에 캡슐화.
+        // 이 경로와 테스트 ㊳ 모두 동일 메서드를 사용하므로 회귀 테스트가 실제 생산 경로를 검증한다.
         object? ticketSection = null;
         if (ticketInventory is not null)
         {
             var tm = ticketInventory.MetricsSnapshot();
-            var rawBytes = new byte[tm.Total];
-            ticketInventory.SnapshotStates(rawBytes);
-            var seatInts = Array.ConvertAll(rawBytes, b => (int)b);
+            var seatInts = ticketInventory.ProjectSeatStates();
             ticketSection = new
             {
                 rows = tm.Rows, cols = tm.Cols, total = tm.Total,

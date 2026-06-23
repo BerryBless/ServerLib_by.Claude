@@ -35,6 +35,19 @@ public sealed class TicketContext
     /// <summary>현재 예약된 슬롯 인덱스입니다. <c>-1</c>이면 예약 없음입니다.</summary>
     public int SlotIndex = -1;
 
+    // long 필드: Environment.TickCount64 기반 슬라이딩 윈도우 시작 시각.
+    // Interlocked.CompareExchange(long)으로 CAS 교체 — 64비트에서 정렬 보장.
+    public long RateLimitWindowStart;
+
+    // int 필드: 현재 윈도우 내 Reserve 시도 횟수. Interlocked.Increment로 원자적 증가.
+    public int RateLimitAttempts;
+
+    /// <summary>속도 제한 윈도우 길이(밀리초). 60초.</summary>
+    public const int RateLimitWindowMs = 60_000;
+
+    /// <summary>단일 윈도우 내 허용 최대 Reserve 시도 횟수.</summary>
+    public const int MaxReserveAttemptsPerWindow = 10;
+
     /// <summary>새 티켓팅 컨텍스트를 초기화합니다.</summary>
     /// <param name="username">더미 로그인 시 입력된 사용자 이름입니다.</param>
     public TicketContext(string username) => Username = username;

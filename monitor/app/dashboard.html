@@ -114,6 +114,8 @@
     const fmt     = n  => (n == null) ? dash : Number(n).toLocaleString('ko');
     const fmtMB   = b  => (b == null) ? dash : (b / 1048576).toFixed(1) + ' MB';
     const fmtPct  = v  => (v == null) ? dash : Number(v).toFixed(1) + '%';
+    // [SEC-MON-03] XSS 방지 — 서버에서 받은 문자열 값을 DOM에 삽입하기 전 HTML 이스케이프
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     function barClass(pct) {
       if (pct >= 85) return 'hi';
@@ -212,8 +214,8 @@
       return `<div class="card">
         <div class="card-header">
           <span class="badge online">ONLINE</span>
-          <span class="card-title">${s.name}</span>
-          <span class="card-addr">${s.host}:${s.port}</span>
+          <span class="card-title">${esc(s.name)}</span>
+          <span class="card-addr">${esc(s.host)}:${s.port}</span>
         </div>
 
         <!-- Sessions -->
