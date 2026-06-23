@@ -24,16 +24,16 @@ public static class ServerNet
     /// 활성 세션을 추적할 레지스트리입니다. <see langword="null"/>(기본값)이면 세션 추적을 사용하지 않습니다.
     /// 반드시 <see cref="CreateSessionRegistry"/>가 반환한 인스턴스를 전달해야 합니다(내부적으로 등록 인터페이스가 함께 필요함).
     /// </param>
-    /// <returns>아직 시작되지 않은(<see cref="IServerListener.Start"/> 호출 전) 서버 리스너입니다.</returns>
+    /// <returns>아직 시작되지 않은(<see cref="IServerListener.Start(int)"/> 호출 전) 서버 리스너입니다.</returns>
     /// <remarks>
-    /// <b>[사용 순서:]</b> 반환된 리스너에 콜백(<see cref="IServerListener.OnReceived"/> 등)과 옵션을 설정한 뒤 <see cref="IServerListener.Start"/>를 호출합니다.
-    /// 콜백·옵션은 <see cref="IServerListener.Start"/> 호출 전에 설정해야 합니다.
+    /// <b>[사용 순서:]</b> 반환된 리스너에 콜백(<see cref="IServerListener.OnReceived"/> 등)과 옵션을 설정한 뒤 <see cref="IServerListener.Start(int)"/>를 호출합니다.
+    /// 콜백·옵션은 <see cref="IServerListener.Start(int)"/> 호출 전에 설정해야 합니다.
     /// <br/><br/>
     /// <b>[Thread Safety:]</b> 팩토리 호출 자체는 thread-safe하나, 반환된 리스너의 설정·시작은 단일 스레드에서 수행하십시오.
     /// <br/><br/>
     /// <b>[Memory Allocation:]</b> 리스너 인스턴스 1회 할당.
     /// <br/><br/>
-    /// <b>[Blocking:]</b> Non-blocking. 즉시 반환합니다(accept 루프는 <see cref="IServerListener.Start"/> 시점에 시작).
+    /// <b>[Blocking:]</b> Non-blocking. 즉시 반환합니다(accept 루프는 <see cref="IServerListener.Start(int)"/> 시점에 시작).
     /// </remarks>
     public static IServerListener CreateListener(ISessionRegistry? registry = null)
         // SessionRegistry는 ISessionRegistry와 ISessionRegistrar를 동시 구현한다.

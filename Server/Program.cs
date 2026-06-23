@@ -424,9 +424,10 @@ adminListener.OnReceived = async (session, data) =>
 // 관리 리스너에는 IdleTimeout 미설정 — 모니터가 5초 주기 폴링 시 게임 30s idle-timeout에 끊기지 않게 함
 
 listener.Start(cfg.Port);
-adminListener.Start(cfg.AdminPort);
+// [SEC-MON-01] 관리 포트는 루프백 전용 — IPAddress.Loopback으로 바인딩해 원격 네트워크 접근 차단
+adminListener.Start(cfg.AdminPort, System.Net.IPAddress.Loopback);
 Console.WriteLine($"[Server] port {cfg.Port} — 보스HP={MobMaxHp:N0}  데미지패킷Id={DamagePacket.Id}  브로드캐스트주기=200ms");
-Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
+Console.WriteLine($"[Admin]  관리포트 {cfg.AdminPort} (127.0.0.1 전용) — StatsRequest(Id={StatsRequestPacket.Id})/StatsResponse(Id={StatsResponsePacket.Id})");
 Console.WriteLine($"  Features: metrics={cfg.Features.EnableMetrics} idleTimeout={cfg.Features.EnableIdleTimeout} " +
                   $"login={cfg.Features.EnableLogin} requireAuth={cfg.Features.RequireAuth} ticketing={cfg.Features.EnableTicketing}");
 if (cfg.Features.EnableTicketing)

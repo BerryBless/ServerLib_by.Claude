@@ -158,7 +158,11 @@ internal sealed class SocketPipelineListener : IServerListener
         }
     }
 
-    public void Start(int port)
+    public void Start(int port) => StartCore(port, IPAddress.Any);
+
+    public void Start(int port, IPAddress bindAddress) => StartCore(port, bindAddress);
+
+    private void StartCore(int port, IPAddress bindAddress)
     {
         if (IsRunning) throw new InvalidOperationException("Already running.");
 
@@ -166,7 +170,7 @@ internal sealed class SocketPipelineListener : IServerListener
         _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         // SO_REUSEADDR: 직전 종료 소켓이 TIME_WAIT(수 분) 상태여도 동일 포트 재바인드 허용 → 서버 재시작 즉시 복구
         _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+        _listenSocket.Bind(new IPEndPoint(bindAddress, port));
         // backlog: 커널의 accept 대기 큐 크기(앱 큐가 아닌 OS 큐). 순간 연결 폭주를 버퍼링하고 초과 SYN은 커널이 드롭
         _listenSocket.Listen(backlog: 512);
 

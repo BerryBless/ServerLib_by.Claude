@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace ServerLib.Interface;
 
 /// <summary>
@@ -201,6 +203,25 @@ public interface IServerListener
     void Start(int port);
 
     /// <summary>
+    /// 지정된 바인드 주소와 포트에서 클라이언트 연결 수락을 시작합니다.
+    /// </summary>
+    /// <param name="port">리슨할 TCP 포트 번호 (1–65535).</param>
+    /// <param name="bindAddress">바인드할 IP 주소. <see cref="IPAddress.Loopback"/>으로 지정하면
+    /// 루프백 인터페이스(127.0.0.1)에만 노출되어 원격 접근을 차단합니다.
+    /// <see cref="IPAddress.Any"/>는 모든 인터페이스에 노출합니다.</param>
+    /// <exception cref="InvalidOperationException">이미 실행 중인 상태에서 호출 시 발생합니다.</exception>
+    /// <exception cref="System.Net.Sockets.SocketException">포트 바인딩 실패 시 발생합니다.</exception>
+    /// <remarks>
+    /// <b>[Blocking:]</b> Non-blocking. accept 루프는 내부 스레드 풀에서 구동되므로 즉시 반환됩니다.
+    /// <br/><br/>
+    /// <b>[Thread Safety:]</b> Not Thread-safe. 단일 스레드에서 호출해야 합니다.
+    /// <br/><br/>
+    /// <b>[보안:]</b> 관리 포트처럼 내부 전용 리스너는 반드시 <see cref="IPAddress.Loopback"/>을 지정하여
+    /// 외부 네트워크 노출을 방지하세요.
+    /// </remarks>
+    void Start(int port, IPAddress bindAddress);
+
+    /// <summary>
     /// accept 루프를 중지하고 리스닝 소켓을 닫습니다.
     /// 이미 수립된 기존 세션은 강제 종료되지 않습니다.
     /// </summary>
@@ -208,7 +229,7 @@ public interface IServerListener
     /// <b>[Blocking:]</b> Non-blocking. 취소 신호를 전송하고 즉시 반환됩니다.
     /// 진행 중인 I/O 작업은 백그라운드에서 정리됩니다.
     /// <br/><br/>
-    /// <b>[Thread Safety:]</b> Not Thread-safe. <see cref="Start"/>와 동일한 스레드에서 호출해야 합니다.
+    /// <b>[Thread Safety:]</b> Not Thread-safe. <see cref="Start(int)"/>와 동일한 스레드에서 호출해야 합니다.
     /// </remarks>
     void Stop();
 }
