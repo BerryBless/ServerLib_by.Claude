@@ -238,16 +238,20 @@ Console.WriteLine($"[CLIENTSTATS] sent={grandTotal} allocBytes={allocDelta} byte
 // ──────────── 티켓팅 데모 로컬 함수 ────────────
 static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer serializer, CancellationToken ct)
 {
-    int clientCount = cfg.Ticketing.ClientCount;
-    int failingIdx  = cfg.Ticketing.FailingClientIndex;
-    int headStartMs = cfg.Ticketing.FailerHeadStartMs;
+    int clientCount    = cfg.Ticketing.ClientCount;
+    int failingIdx     = cfg.Ticketing.FailingClientIndex;
+    int headStartMs    = cfg.Ticketing.FailerHeadStartMs;
+    int seatsPerClient = cfg.Ticketing.SeatsPerClient;  // 클라당 배치 예약 좌석 수
     // 0=Free 상수 — 좌석맵 States 배열에서 예약 가능한 좌석을 판별하는 매직 넘버를 명시
     const byte SeatFree = 0;
 
-    Console.WriteLine($"\n[TICKET] 좌석지정 티켓팅 데모 시작 — 클라이언트={clientCount}  실패클라={failingIdx}  headStart={headStartMs}ms");
-    Console.WriteLine($"         흐름: 로그인 → 좌석맵 조회 → 좌석지정 예약(SeatTaken 시 재선택) → 결제");
+    Console.WriteLine($"\n[TICKET] 좌석지정 배치 티켓팅 데모 시작 — 클라이언트={clientCount}  seatsPerClient={seatsPerClient}  실패클라={failingIdx}  headStart={headStartMs}ms");
+    Console.WriteLine($"         흐름: 로그인 → 좌석맵 조회 → {seatsPerClient}석 배치예약(SeatTaken 시 재선택) → 일괄결제");
 
-    int confirmed = 0, soldOut = 0, failed = 0;
+    // confirmedSeats: 좌석 수 누계 (클라이언트 수가 아님)
+    int confirmedSeats = 0, soldOut = 0, failed = 0;
+    // serverTotalSeats: 최초 좌석맵 응답에서 파악한 서버 총 좌석 수(모니터링용)
+    int serverTotalSeats = 0;
 
     async Task RunClient(int i)
     {
@@ -284,9 +288,10 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
             return await inbox.Reader.ReadAsync(linked.Token);
         }
 
-        // 좌석맵 조회 후 빈 좌석을 선택한다. preferSeatId=-1이면 첫 번째 빈 좌석을 선택.
-        // 반환: (row, col) 또는 null(빈 좌석 없음)
-        async ValueTask<(byte row, byte col)?> RequestSeatMapAndPickFreeAsync(int preferSeatId = -1)
+        // 좌석맵 조회 후 k개의 빈 좌석을 선택한다. preferSeatIds가 있으면 우선 시도.
+        // 반환: (rows[], cols[], serverCols) 또는 null (빈 좌석 k개 미만)
+        async ValueTask<(byte[] rows, byte[] cols, int serverCols)?> RequestSeatMapAndPickFreeSeatsAsync(
+            int k, int[]? preferSeatIds = null)
         {
             await conn.SendAsync(new SeatMapRequestPacket(), ct);
             var mapRaw = await ReadNextAsync();
@@ -295,25 +300,43 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
             var mapResp = serializer.Deserialize<SeatMapResponsePacket>(mapRaw);
             if (mapResp.Rows == 0 || mapResp.Cols == 0 || mapResp.States.Length == 0) return null;
 
+            // 처음 조회한 클라이언트가 서버 총 좌석 수를 기록 (불변식 출력용)
+            Interlocked.CompareExchange(ref serverTotalSeats, mapResp.Rows * mapResp.Cols, 0);
+
             int total = mapResp.Rows * mapResp.Cols;
-            // 선호 좌석이 지정되어 있고 Free이면 그 좌석을 먼저 시도
-            if (preferSeatId >= 0 && preferSeatId < total && mapResp.States[preferSeatId] == SeatFree)
+            int serverCols = mapResp.Cols;
+            var rows  = new byte[k];
+            var cols  = new byte[k];
+            // used: k개 선택된 seatId 추적 (중복 방지)
+            var used  = new HashSet<int>(k);
+            int found = 0;
+
+            // 선호 좌석 우선 선택
+            if (preferSeatIds is not null)
             {
-                byte pr = (byte)(preferSeatId / mapResp.Cols);
-                byte pc = (byte)(preferSeatId % mapResp.Cols);
-                return (pr, pc);
-            }
-            // 첫 번째 빈 좌석 탐색
-            for (int s = 0; s < total; s++)
-            {
-                if (mapResp.States[s] == SeatFree)
+                foreach (int sid in preferSeatIds)
                 {
-                    byte r = (byte)(s / mapResp.Cols);
-                    byte c = (byte)(s % mapResp.Cols);
-                    return (r, c);
+                    if (found >= k) break;
+                    if (sid >= 0 && sid < total && mapResp.States[sid] == SeatFree && !used.Contains(sid))
+                    {
+                        rows[found] = (byte)(sid / mapResp.Cols);
+                        cols[found] = (byte)(sid % mapResp.Cols);
+                        used.Add(sid);
+                        found++;
+                    }
                 }
             }
-            return null; // 빈 좌석 없음 → 매진
+            // 부족분을 앞에서부터 순서대로 채움
+            for (int s = 0; s < total && found < k; s++)
+            {
+                if (mapResp.States[s] != SeatFree || used.Contains(s)) continue;
+                rows[found] = (byte)(s / mapResp.Cols);
+                cols[found] = (byte)(s % mapResp.Cols);
+                used.Add(s);
+                found++;
+            }
+
+            return found >= k ? (rows, cols, serverCols) : null; // k개 확보 못하면 null(빈 좌석 부족)
         }
 
         try
@@ -333,50 +356,59 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
             if (!loginResp.Success) { Console.WriteLine($"  [{i}] 로그인 실패"); return; }
             Console.WriteLine($"  [{i}] 로그인 성공");
 
-            // ② 좌석맵 조회 → 좌석지정 예약 (SeatTaken 시 최대 5회 재시도)
-            // 모든 클라이언트가 처음에 자신의 인덱스 기반 선호 좌석을 지정 → 자연스러운 경합 발생
-            // i=0과 i=6(7클라, 6석) 모두 seatId=0을 선호하므로 충돌이 보장됨
-            int preferSeat = i; // 클라 i는 seatId=i를 첫 번째로 시도
+            // ② 좌석맵 조회 → seatsPerClient석 배치 예약 (SeatTaken 시 최대 5회 재시도)
+            // 클라 i는 seatId=i, i+clientCount, i+2*clientCount, ... 를 선호 — 자연스러운 경합 발생
+            int[] preferSeatIds = Enumerable.Range(0, seatsPerClient)
+                .Select(k => i + k * clientCount).ToArray();
+
             TicketResultPacket resResult = default;
+            int resServerCols = 3; // 기본값; 실제는 좌석맵 응답에서 갱신됨
             const int maxReserveTries = 5;
             bool reserved = false;
 
             for (int attempt = 0; attempt < maxReserveTries && !reserved; attempt++)
             {
-                // 좌석맵 조회: preferSeat을 첫 번째로, 없으면 임의의 빈 좌석 선택
-                var picked = await RequestSeatMapAndPickFreeAsync(preferSeat);
+                // 배치 좌석 선택: 첫 시도에는 선호 좌석, 이후에는 아무 빈 좌석
+                var picked = await RequestSeatMapAndPickFreeSeatsAsync(seatsPerClient,
+                    attempt == 0 ? preferSeatIds : null);
                 if (picked is null)
                 {
-                    Console.WriteLine($"  [{i}] 좌석맵 조회 결과 빈 좌석 없음(매진) — 종료");
+                    Console.WriteLine($"  [{i}] 좌석맵 조회 결과 빈 좌석 {seatsPerClient}개 부족(매진) — 종료");
                     Interlocked.Increment(ref soldOut);
                     return;
                 }
 
-                var (row, col) = picked.Value;
-                char rowChar = (char)('A' + row);
-                Console.WriteLine($"  [{i}] 좌석맵 조회 완료  목표좌석={rowChar}{col + 1}(attempt={attempt + 1})");
+                var (rowsBatch, colsBatch, sc) = picked.Value;
+                resServerCols = sc;
+                var seatLabelsReq = string.Join(",", rowsBatch.Zip(colsBatch)
+                    .Select(rc => $"{(char)('A' + rc.First)}{rc.Second + 1}"));
+                Console.WriteLine($"  [{i}] 좌석맵 조회 완료  목표좌석=[{seatLabelsReq}](attempt={attempt + 1})");
 
-                // 지정 좌석 예약 요청
-                await conn.SendAsync(new TicketReserveRequestPacket { Row = row, Col = col }, ct);
+                // 배치 예약 요청: Count=seatsPerClient, Rows/Cols 배열
+                var reserveReq = new TicketReserveRequestPacket
+                {
+                    Count = (byte)seatsPerClient,
+                    Rows  = rowsBatch,
+                    Cols  = colsBatch
+                };
+                await conn.SendAsync(reserveReq, ct);
                 var resRaw = await ReadNextAsync();
                 resResult  = serializer.Deserialize<TicketResultPacket>(resRaw);
 
                 if (resResult.Status == TicketStatus.Reserved)
                 {
                     reserved = true;
-                    // resResult.Slot: 서버가 확인한 seatId(= row*Cols + col)
-                    char sc = (char)('A' + row);
-                    Console.WriteLine($"  [{i}] 예약 성공  좌석={sc}{col + 1}(seatId={resResult.Slot})  remaining={resResult.Remaining}");
+                    var seatIdList = string.Join(",", resResult.Slots
+                        .Select(s => $"{(char)('A' + s / sc)}{s % sc + 1}"));
+                    Console.WriteLine($"  [{i}] 예약 성공  seats=[{seatIdList}]  count={resResult.Count}  remaining={resResult.Remaining}");
                 }
                 else if (resResult.Status == TicketStatus.SeatTaken)
                 {
-                    // 좌석 점유됨 → 선호 좌석 재설정 후 다음 시도에서 좌석맵 재조회
-                    preferSeat = -1; // 다음 시도에서는 아무 빈 좌석이나 선택
-                    Console.WriteLine($"  [{i}] 좌석 점유됨(SeatTaken) — 재시도 {attempt + 1}/{maxReserveTries}");
+                    // 배치 내 일부 좌석 점유됨 → 좌석맵 재조회 후 새 조합으로 재시도
+                    Console.WriteLine($"  [{i}] 배치 점유됨(SeatTaken) — 재시도 {attempt + 1}/{maxReserveTries}");
                 }
                 else if (resResult.Status == TicketStatus.RateLimited)
                 {
-                    // 속도 제한 — 서버가 요청을 거부. 즉시 중단 (재시도 없음)
                     Console.WriteLine($"  [{i}] 속도 제한(RateLimited) — 예약 중단");
                     Interlocked.Increment(ref soldOut);
                     return;
@@ -396,39 +428,51 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
                 return;
             }
 
-            // ③ 결제 요청 (failer의 첫 번째 결제는 서버 config FailingUsername으로 결정론적 실패)
+            // ③ 일괄 결제 (보유 전체 seatsPerClient석 확정)
             await conn.SendAsync(new TicketPayRequestPacket(), ct);
             var payRaw    = await ReadNextAsync();
             var payResult = serializer.Deserialize<TicketResultPacket>(payRaw);
-            Console.WriteLine($"  [{i}] 결제={payResult.Status}  slot={payResult.Slot}  remaining={payResult.Remaining}");
+            var paidLabels = string.Join(",", payResult.Slots
+                .Select(s => $"{(char)('A' + s / resServerCols)}{s % resServerCols + 1}"));
+            Console.WriteLine($"  [{i}] 결제={payResult.Status}  seats=[{paidLabels}]  count={payResult.Count}  remaining={payResult.Remaining}");
 
             if (payResult.Status == TicketStatus.Confirmed)
             {
-                Interlocked.Increment(ref confirmed);
+                // Interlocked.Add: payResult.Count(확정 좌석 수)만큼 원자 가산
+                Interlocked.Add(ref confirmedSeats, payResult.Count);
                 return;
             }
 
             if (payResult.Status == TicketStatus.PaymentFailed && isFailer)
             {
-                // ④ Failer 재예약: 좌석맵 재조회 → 빈 좌석 재지정 → 재결제
-                Console.WriteLine($"  [{i}] 결제 실패(의도적) — 좌석맵 재조회 후 재예약 시도");
+                // ④ Failer 재예약: 좌석맵 재조회 → seatsPerClient석 재지정 → 재결제
+                Console.WriteLine($"  [{i}] 결제 실패(의도적) — 좌석맵 재조회 후 {seatsPerClient}석 재예약 시도");
 
                 for (int retryAttempt = 0; retryAttempt < maxReserveTries; retryAttempt++)
                 {
-                    var retryPicked = await RequestSeatMapAndPickFreeAsync();
+                    var retryPicked = await RequestSeatMapAndPickFreeSeatsAsync(seatsPerClient);
                     if (retryPicked is null)
                     {
-                        Console.WriteLine($"  [{i}] 재예약: 빈 좌석 없음 — 종료");
+                        Console.WriteLine($"  [{i}] 재예약: 빈 좌석 {seatsPerClient}개 부족 — 종료");
                         Interlocked.Increment(ref soldOut);
                         return;
                     }
 
-                    var (rRow, rCol) = retryPicked.Value;
-                    char rRowChar = (char)('A' + rRow);
-                    await conn.SendAsync(new TicketReserveRequestPacket { Row = rRow, Col = rCol }, ct);
+                    var (rRows, rCols, rsc) = retryPicked.Value;
+                    var retryLabels = string.Join(",", rRows.Zip(rCols)
+                        .Select(rc => $"{(char)('A' + rc.First)}{rc.Second + 1}"));
+                    var retryReq = new TicketReserveRequestPacket
+                    {
+                        Count = (byte)seatsPerClient,
+                        Rows  = rRows,
+                        Cols  = rCols
+                    };
+                    await conn.SendAsync(retryReq, ct);
                     var retryResRaw = await ReadNextAsync();
                     var retryRes    = serializer.Deserialize<TicketResultPacket>(retryResRaw);
-                    Console.WriteLine($"  [{i}] 재예약={retryRes.Status}  좌석={rRowChar}{rCol + 1}(seatId={retryRes.Slot})  remaining={retryRes.Remaining}");
+                    var retryIds = string.Join(",", retryRes.Slots
+                        .Select(s => $"{(char)('A' + s / rsc)}{s % rsc + 1}"));
+                    Console.WriteLine($"  [{i}] 재예약={retryRes.Status}  목표=[{retryLabels}]  seats=[{retryIds}]  remaining={retryRes.Remaining}");
 
                     if (retryRes.Status == TicketStatus.Reserved)
                     {
@@ -436,9 +480,11 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
                         await conn.SendAsync(new TicketPayRequestPacket(), ct);
                         var retryPayRaw = await ReadNextAsync();
                         var retryPay    = serializer.Deserialize<TicketResultPacket>(retryPayRaw);
-                        Console.WriteLine($"  [{i}] 재결제={retryPay.Status}  slot={retryPay.Slot}  ← Failer 최종");
+                        var retryPaidLabels = string.Join(",", retryPay.Slots
+                            .Select(s => $"{(char)('A' + s / rsc)}{s % rsc + 1}"));
+                        Console.WriteLine($"  [{i}] 재결제={retryPay.Status}  seats=[{retryPaidLabels}]  ← Failer 최종");
                         if (retryPay.Status == TicketStatus.Confirmed)
-                            Interlocked.Increment(ref confirmed);
+                            Interlocked.Add(ref confirmedSeats, retryPay.Count);
                         else
                             Interlocked.Increment(ref failed);
                         return;
@@ -478,6 +524,12 @@ static async Task RunTicketingDemoAsync(ClientConfig cfg, BinaryPacketSerializer
 
     await Task.WhenAll(otherTasks.Append(failerTask));
 
-    Console.WriteLine($"\n[TICKET] 최종 결과 — Confirmed={confirmed}  SoldOut={soldOut}  Failed={failed}");
-    Console.WriteLine($"[TICKET] 불변식: Confirmed({confirmed}) == min(ClientCount({clientCount}), TotalSeats)");
+    int totalRequestedSeats = clientCount * seatsPerClient;
+    int totalSeats          = Volatile.Read(ref serverTotalSeats);
+    // 올바른 배치 상한: floor(TotalSeats / SeatsPerClient) 배치만 완전 성공 가능
+    int maxBatches   = totalSeats > 0 ? totalSeats / seatsPerClient : clientCount;
+    int expectedMax  = Math.Min(clientCount, maxBatches) * seatsPerClient;
+    Console.WriteLine($"\n[TICKET] 최종 결과 — ConfirmedSeats={confirmedSeats}  SoldOut(클라)={soldOut}  Failed={failed}");
+    Console.WriteLine($"[TICKET] 기대 상한: ConfirmedSeats({confirmedSeats}) ≤ ExpectedMax({expectedMax})");
+    Console.WriteLine($"         where ExpectedMax = min(ClientCount({clientCount}), floor(TotalSeats({totalSeats})/SeatsPerClient({seatsPerClient})))*SeatsPerClient = {expectedMax}");
 }

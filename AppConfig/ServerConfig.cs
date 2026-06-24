@@ -100,6 +100,13 @@ public sealed class TicketConfig
 
     /// <summary>예약 후 결제하지 않으면 자동 반납되는 TTL(초)입니다. 기본 30초.</summary>
     public int ReservationTtlSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// 세션당 동시에 보유할 수 있는 최대 예약 좌석 수입니다. 기본 4석.
+    /// <c>TicketReserveRequestPacket.Count</c>가 이 값을 초과하면 서버가 <c>SeatTaken</c>으로 거부합니다.
+    /// 1 이상이어야 하며, 서버 기동 시 검증됩니다.
+    /// </summary>
+    public int MaxSeatsPerSession { get; set; } = 4;
 }
 
 /// <summary>

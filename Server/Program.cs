@@ -37,11 +37,15 @@ IDummyPaymentGateway? paymentGateway = null;
 int ticketFailerUsed = 0;
 if (cfg.Features.EnableTicketing)
 {
+    // [CFG-VALID] MaxSeatsPerSession < 1이면 Slots.Length==0으로 모든 Reserve가 SeatTaken — 기동 즉시 거부
+    if (cfg.Ticket.MaxSeatsPerSession < 1)
+        throw new InvalidOperationException($"Ticket.MaxSeatsPerSession must be >= 1, got {cfg.Ticket.MaxSeatsPerSession}");
+
     ticketInventory = new TicketInventory(cfg.Ticket.Rows, cfg.Ticket.Cols, TimeSpan.FromSeconds(cfg.Ticket.ReservationTtlSeconds));
     paymentGateway  = new DummyPaymentGateway(cfg.Ticket.PaymentDelayMs, cfg.Ticket.PaymentFailureRate);
     Console.WriteLine($"[Ticket] 티켓팅 모듈 초기화  grid={cfg.Ticket.Rows}×{cfg.Ticket.Cols}(총{cfg.Ticket.Rows * cfg.Ticket.Cols}석)  " +
                       $"ttl={cfg.Ticket.ReservationTtlSeconds}s  payDelay={cfg.Ticket.PaymentDelayMs}ms  " +
-                      $"failRate={cfg.Ticket.PaymentFailureRate:P0}");
+                      $"failRate={cfg.Ticket.PaymentFailureRate:P0}  maxPerSession={cfg.Ticket.MaxSeatsPerSession}");
 }
 
 // [SEC-04] EnableTicketing은 더미 로그인 전용 — 실제 LoginService와 동시 활성화 시 티켓 핸들러가 무음 비활성화됨
@@ -163,7 +167,7 @@ listener.OnClientDisconnected = session =>
         var tctx = session.GetContext<TicketContext>();
         if (tctx is not null)
         {
-            ticketInventory.ReleaseByContext(tctx);
+            ticketInventory.ReleaseAllByContext(tctx);
             Console.WriteLine($"[-] {session.RemoteEndPoint}  user={tctx.Username}  " +
                               $"(sessions: {metrics?.ConnectedCount ?? 0}  free={ticketInventory.FreeCount})");
             return ValueTask.CompletedTask;
@@ -263,7 +267,7 @@ listener.OnReceived = async (session, data) =>
             await session.SendAsync(new LoginResponsePacket { Success = false, Token = string.Empty });
             return;
         }
-        var tctx = new TicketContext(req.Username);
+        var tctx = new TicketContext(req.Username, cfg.Ticket.MaxSeatsPerSession);
         session.Context = tctx;
         session.TransitionTo(SessionState.Authenticated);
         await session.SendAsync(new LoginResponsePacket { Success = true, Token = string.Empty });
@@ -309,41 +313,100 @@ listener.OnReceived = async (session, data) =>
             await session.SendAsync(new TicketResultPacket
             {
                 Status    = TicketStatus.RateLimited,
-                Slot      = TicketResultPacket.NoSlot,
+                Count     = 0,
+                Slots     = Array.Empty<byte>(),
                 Remaining = 0
             });
             return;
         }
 
         var req = serializer.Deserialize<TicketReserveRequestPacket>(data.Span);
-        // TryReserveByRowCol: Row/Col 경계 검증과 seatId 변환을 도메인 메서드에 위임
-        // Col >= Cols 등 범위 초과 입력은 SeatTaken(-1)으로 거부됨(alias 버그 방지)
-        var (status, slot) = ticketInventory.TryReserveByRowCol(tctx, req.Row, req.Col);
-        int freeAfterReserve = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
-        var pkt = new TicketResultPacket
+
+        // 배치 예약: Count==0 또는 cap 초과이면 SeatTaken 즉시 반환
+        if (req.Count == 0 || req.Count > tctx.Slots.Length)
         {
-            Status    = status,
-            Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+            int freeCap = ticketInventory.FreeCount;
+            await session.SendAsync(new TicketResultPacket
+            {
+                Status    = TicketStatus.SeatTaken,
+                Count     = 0,
+                Slots     = Array.Empty<byte>(),
+                Remaining = (byte)Math.Min(freeCap, byte.MaxValue)
+            });
+            return;
+        }
+
+        // Row/Col → seatId 변환 (범위 초과·중복은 TryReserveBatch에서 검증)
+        // int[]: async lambda 내에서 await 경계를 넘어 참조하므로 stackalloc Span<int> 불가 — heap 할당
+        int[] seatIds    = new int[req.Count];
+        int[] reservedOut = new int[req.Count];
+        for (int i = 0; i < req.Count; i++)
+        {
+            // 개별 범위 검증: TryReserveBatch에서도 재검증되지만 사전 차단으로 불필요한 루프 진입 방지
+            if (i >= req.Rows.Length || i >= req.Cols.Length ||
+                req.Rows[i] >= ticketInventory.Rows || req.Cols[i] >= ticketInventory.Cols)
+            {
+                int freeBadInput = ticketInventory.FreeCount;
+                await session.SendAsync(new TicketResultPacket
+                {
+                    Status    = TicketStatus.SeatTaken,
+                    Count     = 0,
+                    Slots     = Array.Empty<byte>(),
+                    Remaining = (byte)Math.Min(freeBadInput, byte.MaxValue)
+                });
+                return;
+            }
+            seatIds[i] = req.Rows[i] * ticketInventory.Cols + req.Cols[i];
+        }
+
+        // TryReserveBatch: All-or-nothing lock-free 배치 예약 — 실패 시 롤백 포함
+        var (batchStatus, reservedCount) = ticketInventory.TryReserveBatch(tctx, seatIds, reservedOut);
+        int freeAfterReserve = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
+
+        // 결과 패킷: 성공 시 Slots에 seatId 목록, 실패 시 Count=0
+        byte[] resultSlots = reservedCount > 0 ? new byte[reservedCount] : Array.Empty<byte>();
+        for (int i = 0; i < reservedCount; i++)
+            resultSlots[i] = (byte)reservedOut[i];
+
+        await session.SendAsync(new TicketResultPacket
+        {
+            Status    = batchStatus,
+            Count     = (byte)reservedCount,
+            Slots     = resultSlots,
             Remaining = (byte)Math.Min(freeAfterReserve, byte.MaxValue)
-        };
-        await session.SendAsync(pkt);
-        // 좌석을 문자+숫자 형식(예: A1)으로 출력 — Row=0→'A', Col=0→1
-        char rowChar = (char)('A' + req.Row);
-        Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={status}  seat={rowChar}{req.Col + 1}(seatId={slot})  free={freeAfterReserve}");
+        });
+
+        // 콘솔 출력: resultSlots(byte[]) 기반 — await 이후 int[] reservedOut 대신 byte[] 사용
+        if (reservedCount > 0)
+        {
+            var seatLabels = string.Join(",", resultSlots
+                .Select(s => $"{(char)('A' + s / ticketInventory.Cols)}{s % ticketInventory.Cols + 1}"));
+            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={batchStatus}  seats=[{seatLabels}]  free={freeAfterReserve}");
+        }
+        else
+        {
+            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  reserve={batchStatus}  seats=[]  free={freeAfterReserve}");
+        }
     }
     else if (packetId == TicketPayRequestPacket.Id && ticketInventory is not null)
     {
         var tctx = session.GetContext<TicketContext>();
         if (tctx is null) return;
 
-        // [SEC-01] 예약 없이 결제하거나 이중 결제 경로 사전 차단 — 직렬 디스패치 보장으로 check-then-act 안전
-        if (Volatile.Read(ref tctx.SlotIndex) < 0)
+        // [SEC-01] 예약 없이 결제하거나 이중 결제 사전 차단 — 직렬 디스패치 보장으로 check-then-act 안전
+        // 배치: Slots 배열에서 하나라도 >=0 인 원소가 있으면 예약 중. 없으면 NotReserved.
+        bool hasReservation = false;
+        for (int k = 0; k < tctx.Slots.Length; k++)
+            if (Volatile.Read(ref tctx.Slots[k]) >= 0) { hasReservation = true; break; }
+
+        if (!hasReservation)
         {
             int freeNoSlot = ticketInventory.FreeCount;
             await session.SendAsync(new TicketResultPacket
             {
                 Status    = TicketStatus.NotReserved,
-                Slot      = TicketResultPacket.NoSlot,
+                Count     = 0,
+                Slots     = Array.Empty<byte>(),
                 Remaining = (byte)Math.Min(freeNoSlot, byte.MaxValue)
             });
             return;
@@ -369,8 +432,8 @@ listener.OnReceived = async (session, data) =>
             }
             catch (OperationCanceledException)
             {
-                // [DL-T01] 서버 종료 시 OCE: 슬롯 반납 후 응답 생략(세션이 이미 종료 중)
-                ticketInventory.ReleaseByContext(tctx);
+                // [DL-T01] 서버 종료 시 OCE: 전체 슬롯 반납 후 응답 생략(세션이 이미 종료 중)
+                ticketInventory.ReleaseAllByContext(tctx);
                 return;
             }
         }
@@ -378,42 +441,62 @@ listener.OnReceived = async (session, data) =>
         TicketResultPacket result;
         if (charged)
         {
-            var (status, slot) = ticketInventory.Confirm(tctx);
-            if (status == TicketStatus.NotReserved)
+            // ConfirmAll: 세션 보유 전체 좌석을 Sold로 확정.
+            // int[]: async lambda 내 await 경계를 넘으므로 Span<int>/stackalloc 불가 — heap 할당(소규모 MaxSeatsPerSession)
+            int[] confirmedArr = new int[tctx.Slots.Length];
+            int confirmedCount = ticketInventory.ConfirmAll(tctx, confirmedArr);
+            if (confirmedCount == 0)
             {
-                // [LF-가설1] 결제 성공 후 슬롯 상실(TTL 만료 경합): 실 PG 연동 시 이 경로에서 RefundAsync 필요
-                Console.WriteLine($"[TICKET-WARN] {session.RemoteEndPoint}  user={tctx.Username}  결제 성공 후 슬롯 상실 (TTL 만료 경합)");
+                // [LF-가설1] 결제 성공 후 슬롯 전부 상실(TTL 만료 경합): 실 PG 연동 시 RefundAsync 필요
+                Console.WriteLine($"[TICKET-WARN] {session.RemoteEndPoint}  user={tctx.Username}  결제 성공 후 전체 슬롯 상실 (TTL 만료 경합)");
                 int freeLost = ticketInventory.FreeCount;
                 result = new TicketResultPacket
                 {
                     Status    = TicketStatus.PaymentFailed,
-                    Slot      = TicketResultPacket.NoSlot,
+                    Count     = 0,
+                    Slots     = Array.Empty<byte>(),
                     Remaining = (byte)Math.Min(freeLost, byte.MaxValue)
                 };
             }
             else
             {
                 int freeOk = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
+                // confirmedSpan → byte[] 변환: ConfirmAll은 await 없이 완료됐으므로 이 시점에 안전
+                byte[] confirmedBytes = new byte[confirmedCount];
+                for (int i = 0; i < confirmedCount; i++)
+                    confirmedBytes[i] = (byte)confirmedArr[i];
                 result = new TicketResultPacket
                 {
-                    Status    = status,
-                    Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+                    Status    = TicketStatus.Confirmed,
+                    Count     = (byte)confirmedCount,
+                    Slots     = confirmedBytes,
                     Remaining = (byte)Math.Min(freeOk, byte.MaxValue)
                 };
-                Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=OK  status={status}  slot={slot}  free={freeOk}");
+                var seatLabels = string.Join(",", confirmedBytes
+                    .Select(s => $"{(char)('A' + s / ticketInventory.Cols)}{s % ticketInventory.Cols + 1}"));
+                Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=OK  confirmed=[{seatLabels}]  free={freeOk}");
             }
         }
         else
         {
-            var (_, slot) = ticketInventory.Release(tctx);
+            // ReleaseAll: 결제 실패 — 전체 보유 좌석 반납(All-or-nothing 결제 실패)
+            // int[]: async lambda 내 await 경계를 넘으므로 Span<int>/stackalloc 불가 — heap 할당(소규모)
+            int[] releasedArr = new int[tctx.Slots.Length];
+            int releasedCount = ticketInventory.ReleaseAll(tctx, releasedArr);
             int freeFail = ticketInventory.FreeCount; // [PERF-01] O(n) 스캔 1회만 호출
+            byte[] releasedBytes = releasedCount > 0 ? new byte[releasedCount] : Array.Empty<byte>();
+            for (int i = 0; i < releasedCount; i++)
+                releasedBytes[i] = (byte)releasedArr[i];
             result = new TicketResultPacket
             {
                 Status    = TicketStatus.PaymentFailed,
-                Slot      = slot >= 0 ? (byte)slot : TicketResultPacket.NoSlot,
+                Count     = (byte)releasedCount,
+                Slots     = releasedBytes,
                 Remaining = (byte)Math.Min(freeFail, byte.MaxValue)
             };
-            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=FAIL  slot반납={slot}  free={freeFail}");
+            var relLabels = string.Join(",", releasedBytes
+                .Select(s => $"{(char)('A' + s / ticketInventory.Cols)}{s % ticketInventory.Cols + 1}"));
+            Console.WriteLine($"[TICKET] {session.RemoteEndPoint}  user={tctx.Username}  pay=FAIL  released=[{relLabels}]  free={freeFail}");
         }
         await session.SendAsync(result);
     }

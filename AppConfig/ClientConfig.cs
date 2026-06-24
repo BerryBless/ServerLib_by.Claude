@@ -67,6 +67,13 @@ public sealed class TicketingDemoConfig
     /// 이 시간 동안 실패 클라이언트가 접속·로그인·예약을 완료하면 슬롯이 보장됩니다.
     /// </summary>
     public int FailerHeadStartMs { get; set; } = 200;
+
+    /// <summary>
+    /// 클라이언트 1명이 한 배치로 예약·결제를 시도하는 좌석 수입니다. 기본 2석.
+    /// 실제 예약 수는 <c>min(SeatsPerClient, MaxSeatsPerSession)</c>으로 상한이 적용됩니다(서버 설정 기준).
+    /// 서버 총 좌석 수가 <c>ClientCount * SeatsPerClient</c>보다 적으면 일부 클라이언트는 <c>SoldOut</c>을 수신합니다.
+    /// </summary>
+    public int SeatsPerClient { get; set; } = 2;
 }
 
 /// <summary>클라이언트 로그인 자격증명 설정입니다.</summary>

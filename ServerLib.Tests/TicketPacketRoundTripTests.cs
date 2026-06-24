@@ -74,28 +74,59 @@ public class TicketPacketRoundTripTests
         Assert.Equal(2, p2.States[0]); // Sold
     }
 
-    // ─────── TicketReserveRequestPacket (Row/Col 추가됨) ───────
+    // ─────── TicketReserveRequestPacket (배치 포맷: [Count(1B)][Row,Col 쌍...]) ───────
 
     [Theory]
     [InlineData(0, 0)]
     [InlineData(1, 2)]
     [InlineData(255, 255)]
-    public void TicketReserveRequest_roundtrip_preserves_row_and_col(byte row, byte col)
+    public void TicketReserveRequest_roundtrip_single_seat_preserves_row_and_col(byte row, byte col)
     {
-        var pkt    = new TicketReserveRequestPacket { Row = row, Col = col };
+        // Single(): Count=1, Rows=[row], Cols=[col]
+        var pkt    = TicketReserveRequestPacket.Single(row, col);
         byte[] buf = new byte[PacketPool.HeaderSize + pkt.GetBodySize()];
         _serializer.Serialize(pkt, buf);
 
         var p2 = _serializer.Deserialize<TicketReserveRequestPacket>(buf);
         Assert.Equal(TicketReserveRequestPacket.Id, p2.PacketId);
-        Assert.Equal(row, p2.Row);
-        Assert.Equal(col, p2.Col);
+        Assert.Equal(1,   p2.Count);
+        Assert.Equal(row, p2.Rows[0]);
+        Assert.Equal(col, p2.Cols[0]);
     }
 
     [Fact]
-    public void TicketReserveRequest_bodySize_is_two()
+    public void TicketReserveRequest_roundtrip_batch_preserves_all_pairs()
     {
-        Assert.Equal(2, new TicketReserveRequestPacket().GetBodySize());
+        // 3석 배치: (0,1), (1,0), (1,2) — Count=3, bodySize=1+3*2=7
+        var pkt = new TicketReserveRequestPacket
+        {
+            Count = 3,
+            Rows  = new byte[] { 0, 1, 1 },
+            Cols  = new byte[] { 1, 0, 2 }
+        };
+        byte[] buf = new byte[PacketPool.HeaderSize + pkt.GetBodySize()];
+        _serializer.Serialize(pkt, buf);
+
+        var p2 = _serializer.Deserialize<TicketReserveRequestPacket>(buf);
+        Assert.Equal(TicketReserveRequestPacket.Id, p2.PacketId);
+        Assert.Equal(3, p2.Count);
+        Assert.Equal(new byte[] { 0, 1, 1 }, p2.Rows);
+        Assert.Equal(new byte[] { 1, 0, 2 }, p2.Cols);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]  // Count=0 → 1+0*2=1
+    [InlineData(1, 3)]  // Count=1 → 1+1*2=3
+    [InlineData(4, 9)]  // Count=4 → 1+4*2=9
+    public void TicketReserveRequest_bodySize_is_1_plus_count_times_2(byte count, int expected)
+    {
+        var pkt = new TicketReserveRequestPacket
+        {
+            Count = count,
+            Rows  = new byte[count],
+            Cols  = new byte[count]
+        };
+        Assert.Equal(expected, pkt.GetBodySize());
     }
 
     // ─────── TicketPayRequestPacket ───────
@@ -119,28 +150,65 @@ public class TicketPacketRoundTripTests
         Assert.Equal(0, new TicketPayRequestPacket().GetBodySize());
     }
 
-    // ─────── TicketResultPacket ───────
+    // ─────── TicketResultPacket (배치 포맷: [Status(1B)][Count(1B)][Slots...][Remaining(1B)]) ───────
 
     [Theory]
-    [InlineData(TicketStatus.Reserved,       0,    2)]
-    [InlineData(TicketStatus.SoldOut,        0xFF, 0)]
-    [InlineData(TicketStatus.AlreadyReserved,1,    1)]
-    [InlineData(TicketStatus.NotReserved,    0xFF, 3)]
-    [InlineData(TicketStatus.Confirmed,      2,    0)]
-    [InlineData(TicketStatus.PaymentFailed,  0,    2)]
-    [InlineData(TicketStatus.Released,       1,    3)]
-    [InlineData(TicketStatus.SeatTaken,      0xFF, 5)] // 신규: 좌석 점유됨
-    public void TicketResult_roundtrip_preserves_all_fields(TicketStatus status, byte slot, byte remaining)
+    // (status, count, seatId대표값, remaining) — count>0이면 Slots=[seatId], 0이면 빈 배열
+    [InlineData(TicketStatus.Reserved,       1, (byte)0,    2)]
+    [InlineData(TicketStatus.SoldOut,        0, (byte)0xFF, 0)]
+    [InlineData(TicketStatus.AlreadyReserved,0, (byte)0xFF, 1)]
+    [InlineData(TicketStatus.NotReserved,    0, (byte)0xFF, 3)]
+    [InlineData(TicketStatus.Confirmed,      1, (byte)2,    0)]
+    [InlineData(TicketStatus.PaymentFailed,  0, (byte)0xFF, 2)]
+    [InlineData(TicketStatus.Released,       1, (byte)1,    3)]
+    [InlineData(TicketStatus.SeatTaken,      0, (byte)0xFF, 5)]
+    public void TicketResult_roundtrip_preserves_all_fields(
+        TicketStatus status, byte count, byte seatId, byte remaining)
     {
-        var pkt    = new TicketResultPacket { Status = status, Slot = slot, Remaining = remaining };
+        // count>0이면 단일 슬롯 배열, 0이면 빈 배열
+        byte[] slots = count > 0 ? new[] { seatId } : Array.Empty<byte>();
+        var pkt    = new TicketResultPacket { Status = status, Count = count, Slots = slots, Remaining = remaining };
         byte[] buf = new byte[PacketPool.HeaderSize + pkt.GetBodySize()];
         _serializer.Serialize(pkt, buf);
 
         var p2 = _serializer.Deserialize<TicketResultPacket>(buf);
         Assert.Equal(TicketResultPacket.Id, p2.PacketId);
         Assert.Equal(status,    p2.Status);
-        Assert.Equal(slot,      p2.Slot);
+        Assert.Equal(count,     p2.Count);
         Assert.Equal(remaining, p2.Remaining);
+        if (count > 0)
+        {
+            Assert.NotNull(p2.Slots);
+            Assert.Equal(count, p2.Slots.Length);
+            Assert.Equal(seatId, p2.Slots[0]);
+        }
+        else
+        {
+            Assert.NotNull(p2.Slots);
+            Assert.Empty(p2.Slots);
+        }
+    }
+
+    [Fact]
+    public void TicketResult_roundtrip_batch_two_slots()
+    {
+        // 2석 배치 확정: Status=Confirmed, Count=2, Slots=[1,4], Remaining=2
+        var pkt = new TicketResultPacket
+        {
+            Status    = TicketStatus.Confirmed,
+            Count     = 2,
+            Slots     = new byte[] { 1, 4 },
+            Remaining = 2
+        };
+        byte[] buf = new byte[PacketPool.HeaderSize + pkt.GetBodySize()];
+        _serializer.Serialize(pkt, buf);
+
+        var p2 = _serializer.Deserialize<TicketResultPacket>(buf);
+        Assert.Equal(TicketStatus.Confirmed, p2.Status);
+        Assert.Equal(2,   p2.Count);
+        Assert.Equal(new byte[] { 1, 4 }, p2.Slots);
+        Assert.Equal(2,   p2.Remaining);
+        Assert.Equal(3 + 2, pkt.GetBodySize()); // 5B: [Status][Count][1][4][Remaining]
     }
 
     [Fact]
@@ -150,9 +218,14 @@ public class TicketPacketRoundTripTests
     }
 
     [Fact]
-    public void TicketResult_bodySize_is_three()
+    public void TicketResult_bodySize_is_3_plus_count()
     {
+        // Count=0(기본): bodySize=3+0=3 (하위호환)
         Assert.Equal(3, new TicketResultPacket().GetBodySize());
+        // Count=1: bodySize=3+1=4
+        Assert.Equal(4, new TicketResultPacket { Count = 1, Slots = new byte[1] }.GetBodySize());
+        // Count=4: bodySize=3+4=7
+        Assert.Equal(7, new TicketResultPacket { Count = 4, Slots = new byte[4] }.GetBodySize());
     }
 
     // ─────── TicketStatus 열거형 검증 ───────

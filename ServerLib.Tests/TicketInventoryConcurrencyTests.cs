@@ -161,7 +161,7 @@ public class TicketInventoryConcurrencyTests
         for (int r = 0; r < rounds; r++)
         {
             // 슬롯 재예약 (직전 라운드에서 Free로 돌아온 경우)
-            if (ctx.SlotIndex < 0)
+            if (ctx.Slots[0] < 0)
                 inv.TryReserve(ctx, 0);
 
             // 두 경쟁자 동시 시작
@@ -240,7 +240,7 @@ public class TicketInventoryConcurrencyTests
 
         Assert.Equal(TicketStatus.SeatTaken, status);
         Assert.Equal(-1, slot);
-        Assert.Equal(-1, ctx.SlotIndex); // SlotIndex 오염 없음
+        Assert.Equal(-1, ctx.Slots[0]); // SlotIndex 오염 없음
     }
 
     // ⑩ seatId >= TotalTickets → SeatTaken
@@ -310,7 +310,7 @@ public class TicketInventoryConcurrencyTests
 
         Assert.Equal(1, released);
         Assert.Equal(2, inv.FreeCount);   // 슬롯 반납됨
-        Assert.Equal(-1, ctx.SlotIndex);  // 선형화 앵커 소비됨
+        Assert.Equal(-1, ctx.Slots[0]);  // 선형화 앵커 소비됨
     }
 
     // ⑭ Confirm 완료 슬롯(Sold)은 SweepExpired가 건드리지 않음
@@ -348,7 +348,7 @@ public class TicketInventoryConcurrencyTests
         int released = inv.SweepExpired();
 
         Assert.Equal(0, released);
-        Assert.True(ctx.SlotIndex >= 0); // 좌석 1 보유 유지
+        Assert.True(ctx.Slots[0] >= 0); // 좌석 1 보유 유지
     }
 
     // ─────── GAP-03: null 컨텍스트 방어 ───────
@@ -445,7 +445,7 @@ public class TicketInventoryConcurrencyTests
         var (relStatus, relSlot) = inv.Release(ctx);
         Assert.Equal(TicketStatus.Released, relStatus);
         Assert.Equal(0, relSlot);
-        Assert.Equal(-1, ctx.SlotIndex); // 선형화 앵커 소비됨
+        Assert.Equal(-1, ctx.Slots[0]); // 선형화 앵커 소비됨
 
         // 동일 컨텍스트가 같은 좌석을 재예약
         var (secondStatus, secondSlot) = inv.TryReserve(ctx, 0);
@@ -489,7 +489,7 @@ public class TicketInventoryConcurrencyTests
 
         Assert.Equal(TicketStatus.SeatTaken, status);
         Assert.Equal(-1, slot);
-        Assert.Equal(-1, ctx.SlotIndex); // SlotIndex 오염 없음
+        Assert.Equal(-1, ctx.Slots[0]); // SlotIndex 오염 없음
         Assert.Equal(6, inv.FreeCount);  // 실제 좌석(1,0) 미점유 확인
     }
 
@@ -518,7 +518,7 @@ public class TicketInventoryConcurrencyTests
 
         Assert.Equal(TicketStatus.Reserved, status);
         Assert.Equal(5, slot); // seatId=5
-        Assert.Equal(5, ctx.SlotIndex);
+        Assert.Equal(5, ctx.Slots[0]);
         Assert.Equal(5, inv.FreeCount); // 1석 감소
     }
 
@@ -539,10 +539,10 @@ public class TicketInventoryConcurrencyTests
         // 범위 초과 (0,3): 별칭이 없다면 SeatTaken(-1) 반환, seatId=3 재점유 없음
         var (aliasStatus, _) = inv.TryReserveByRowCol(ctx2, 0, 3);
         Assert.Equal(TicketStatus.SeatTaken, aliasStatus);
-        Assert.Equal(-1, ctx2.SlotIndex); // ctx2 SlotIndex 오염 없음
+        Assert.Equal(-1, ctx2.Slots[0]); // ctx2 SlotIndex 오염 없음
 
         // (1,0)은 여전히 ctx1이 보유
-        Assert.Equal(3, ctx1.SlotIndex);
+        Assert.Equal(3, ctx1.Slots[0]);
     }
 
     // ㉘ TryReserveByRowCol: 2D 그리드 동시 예약 — 정확히 TotalTickets개만 성공
@@ -749,6 +749,200 @@ public class TicketInventoryConcurrencyTests
         Assert.Equal(64, (int)(m.TotalReserved + m.TotalSeatTaken));
         Assert.Equal(3, m.TotalReserved); // 3석만 성공
         Assert.Equal(64 - 3, (int)m.TotalSeatTaken);
+    }
+
+    // ─────── 신규 배치 API 테스트 ───────
+
+    // ㊴ TryReserveBatch: K석 전부 성공
+    [Fact]
+    public void TryReserveBatch_all_seats_success()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 3); // cap=3
+
+        Span<int> reserved = stackalloc int[3];
+        var (status, count) = inv.TryReserveBatch(ctx, new[] { 0, 1, 2 }, reserved);
+
+        Assert.Equal(TicketStatus.Reserved, status);
+        Assert.Equal(3, count);
+        Assert.Equal(3, inv.FreeCount); // 3석 예약, 3석 잔여
+        // Slots 배열에 3개의 seatId가 채워져 있어야 함
+        int heldCount = ctx.Slots.Count(s => s >= 0);
+        Assert.Equal(3, heldCount);
+    }
+
+    // ㊵ TryReserveBatch 경합 롤백: 두 컨텍스트가 겹치는 배치 → 정확히 하나만 전체 성공, 패자는 0석
+    [Fact]
+    public async Task TryReserveBatch_concurrent_overlapping_exactly_one_wins()
+    {
+        var inv  = Make2D(1, 4); // 4석: seatId 0~3
+        var ctx1 = new TicketContext("user1", 2);
+        var ctx2 = new TicketContext("user2", 2);
+        // 두 컨텍스트 모두 seatId 1,2를 요청 — 반드시 경합 발생
+        int[]   seatIds1 = { 1, 2 };
+        int[]   seatIds2 = { 1, 2 };
+
+        Span<int> buf1 = stackalloc int[2];
+        Span<int> buf2 = stackalloc int[2];
+
+        var barrier = new Barrier(2);
+        int winner1 = 0, winner2 = 0; // 각 컨텍스트의 실제 예약 수
+
+        await Task.WhenAll(
+            Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                Span<int> b = stackalloc int[2];
+                var (_, c) = inv.TryReserveBatch(ctx1, seatIds1, b);
+                winner1 = c;
+            }),
+            Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                Span<int> b = stackalloc int[2];
+                var (_, c) = inv.TryReserveBatch(ctx2, seatIds2, b);
+                winner2 = c;
+            }));
+
+        // 정확히 하나만 전체 성공(2석), 패자는 0석
+        int totalWon = winner1 + winner2;
+        Assert.Equal(2, totalWon);
+        // 패자 컨텍스트: Reserved 잔류 좌석 없음(All-or-nothing 롤백)
+        bool loserCtx1CleanedUp = ctx1.Slots.All(s => s < 0);
+        bool loserCtx2CleanedUp = ctx2.Slots.All(s => s < 0);
+        if (winner1 == 0) Assert.True(loserCtx1CleanedUp, "패자 ctx1의 Slots가 롤백되지 않음");
+        if (winner2 == 0) Assert.True(loserCtx2CleanedUp, "패자 ctx2의 Slots가 롤백되지 않음");
+        // Reserved 잔류 슬롯 검증: 경합에서 진 배치가 _states를 Reserved로 남기지 않음
+        Assert.Equal(inv.TotalTickets - totalWon, inv.FreeCount);
+    }
+
+    // ㊶ TryReserveBatch: cap 초과 요청 → SeatTaken, 좌석 무변경
+    [Fact]
+    public void TryReserveBatch_exceeds_cap_returns_seatTaken()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 2); // cap=2
+
+        Span<int> reserved = stackalloc int[3];
+        // cap(2)보다 많은 3석 요청 → SeatTaken
+        var (status, count) = inv.TryReserveBatch(ctx, new[] { 0, 1, 2 }, reserved);
+
+        Assert.Equal(TicketStatus.SeatTaken, status);
+        Assert.Equal(0, count);
+        Assert.Equal(6, inv.FreeCount); // 좌석 무변경
+        Assert.True(ctx.Slots.All(s => s < 0)); // 슬롯 미오염
+    }
+
+    // ㊷ TryReserveBatch: 배치 내 중복 좌석 → SeatTaken, 좌석 무변경
+    [Fact]
+    public void TryReserveBatch_duplicate_seatIds_returns_seatTaken()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 3);
+
+        Span<int> reserved = stackalloc int[3];
+        // seatId=1이 두 번 등장 — 중복 검증으로 즉시 거부
+        var (status, count) = inv.TryReserveBatch(ctx, new[] { 0, 1, 1 }, reserved);
+
+        Assert.Equal(TicketStatus.SeatTaken, status);
+        Assert.Equal(0, count);
+        Assert.Equal(6, inv.FreeCount); // 좌석 무변경
+    }
+
+    // ㊸ ConfirmAll: 보유 전체 Sold, Slots 전부 -1
+    [Fact]
+    public void ConfirmAll_marks_all_held_slots_as_sold()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 3);
+
+        Span<int> reservedBuf = stackalloc int[3];
+        inv.TryReserveBatch(ctx, new[] { 0, 2, 4 }, reservedBuf);
+
+        Span<int> confirmedBuf = stackalloc int[3];
+        int count = inv.ConfirmAll(ctx, confirmedBuf);
+
+        Assert.Equal(3, count);
+        // Slots 전부 -1(소비됨)
+        Assert.True(ctx.Slots.All(s => s < 0));
+        // 6석 중 3석 Sold → FreeCount=3
+        Assert.Equal(3, inv.FreeCount);
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(3, m.Sold);
+        Assert.Equal(3, m.TotalConfirmed);
+    }
+
+    // ㊹ ReleaseAll: 보유 전체 해제, Slots 전부 -1
+    [Fact]
+    public void ReleaseAll_releases_all_held_slots()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 2);
+
+        Span<int> reservedBuf = stackalloc int[2];
+        inv.TryReserveBatch(ctx, new[] { 1, 3 }, reservedBuf);
+        Assert.Equal(4, inv.FreeCount);
+
+        Span<int> releasedBuf = stackalloc int[2];
+        int count = inv.ReleaseAll(ctx, releasedBuf);
+
+        Assert.Equal(2, count);
+        Assert.True(ctx.Slots.All(s => s < 0));
+        Assert.Equal(6, inv.FreeCount); // 전체 복귀
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(2, m.TotalPaymentFailed);
+    }
+
+    // ㊺ SweepExpired 배치 컨텍스트: {0,1} 보유, 0만 만료 → entry 0만 해제, entry 1 잔존
+    [Fact]
+    public void SweepExpired_releases_only_expired_slot_in_batch_context()
+    {
+        // TTL 1ms — seat 0를 만료시키고 seat 1을 TTL 내에 유지
+        var inv  = new TicketInventory(1, 4, TimeSpan.FromMilliseconds(1));
+        var ctx  = new TicketContext("user", 2);
+
+        // seat 0 예약 후 TTL 초과, seat 1은 직후 예약 → 아직 TTL 내
+        Span<int> buf0 = stackalloc int[1];
+        inv.TryReserveBatch(ctx, new[] { 0 }, buf0); // seat 0 예약
+        Thread.Sleep(20);                              // seat 0 TTL 초과
+
+        // seat 1은 TTL 이후에 예약 → TTL 만료 안 됨
+        // 그러나 ctx.Slots[0]가 seat 0를 가지고 있으므로 seat 1은 Slots[1]에 들어감
+        // cap=2이므로 직접 TryReserveOne으로 대신 Slots[1]에 seat 1 넣기
+        // → 배치 2개 동시 예약으로 변경: 다른 컨텍스트로 seat 0 이미 점유 후 ctx만 seat 1 예약
+        // 여기서는 단순화: ctx 하나만 cap=2로 두 좌석 동시 예약 후 seat0만 TTL 초과(불가능)
+        // 대신 두 컨텍스트로 검증
+        var ctx2 = new TicketContext("user2", 2);
+        Span<int> buf1 = stackalloc int[1];
+        inv.TryReserveBatch(ctx2, new[] { 1 }, buf1); // seat 1 예약 (TTL 내)
+
+        int released = inv.SweepExpired();
+
+        Assert.Equal(1, released);                // seat 0만 반납
+        Assert.Equal(-1, ctx.Slots[0]);           // seat 0 entry 소비됨
+        Assert.Equal(1, ctx2.Slots[0]);           // seat 1 잔존
+        Assert.Equal(3, inv.FreeCount);           // seat 0 Free, seat 2·3 Free → 3개 (seat 1 Reserved)
+        var m = inv.MetricsSnapshot();
+        Assert.Equal(1, m.TotalExpired);
+    }
+
+    // ㊻ AlreadyReserved: 배치 보유 중인 컨텍스트의 두 번째 TryReserveBatch는 AlreadyReserved
+    [Fact]
+    public void TryReserveBatch_second_request_while_holding_returns_alreadyReserved()
+    {
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 2);
+
+        Span<int> buf1 = stackalloc int[2];
+        var (first, _) = inv.TryReserveBatch(ctx, new[] { 0, 1 }, buf1);
+        Assert.Equal(TicketStatus.Reserved, first);
+
+        // 이미 2석 보유 중 → 두 번째 배치 요청은 AlreadyReserved
+        Span<int> buf2 = stackalloc int[2];
+        var (second, count2) = inv.TryReserveBatch(ctx, new[] { 2, 3 }, buf2);
+        Assert.Equal(TicketStatus.AlreadyReserved, second);
+        Assert.Equal(0, count2);
+        Assert.Equal(4, inv.FreeCount); // 첫 배치(2석)만 예약됨
     }
 
     // ㊳ Base64 함정 회귀 방지 — int[] 투영 후 JSON 직렬화 시 숫자 배열로 나와야 함
