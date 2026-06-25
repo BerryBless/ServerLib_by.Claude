@@ -1,7 +1,29 @@
 # 티켓팅 소크 하네스 (SoakTest 확장)
 
 **날짜:** 2026-06-25  
-**검증:** `dotnet build` 0오류·0경고, Damage 회귀 PASS, 티켓팅 스모크 PASS (sold=36·KPI보존·좌석보존·슬롯0)
+**검증:** `dotnet build` 0오류·0경고, 전 테스트 시나리오 PASS (6종 — Spread·Hotspot·Grind·Expire-focus·10분 장시간·Damage 회귀)
+
+### 전체 테스트 결과 (2026-06-25)
+
+| 테스트 | 결과 | 주요 KPI |
+|--------|------|---------|
+| Smoke/Spread (30s) | **PASS** | sent=921=serverRecv, sold=36, errs=0 |
+| Hotspot (40s) | **PASS** | sent=1,386=serverRecv, errs=0 |
+| Grind (40s) | **PASS** | sent=1,298=serverRecv, sold=34, errs=0 |
+| Expire-focus (expire-rate=0.5, 40s) | **PASS** | expired=16, reserved=0(settle후) |
+| Long-duration (10분, 6,619 cycles) | **PASS** | heap 2~25MB 진동(단조증가 없음), errs=0 |
+| Damage 회귀 | **PASS** | sent=17,950=serverRecv, errs=0 |
+
+### 파이프 버퍼링 루트 코즈 (진단 기록)
+
+초기 테스트에서 `ClientErrorRate [Hard] FAIL` (errs≈300/550 사이클) 반복 발생. 근본 원인:
+
+1. **`run_soak.ps1` `ReadToEnd()` 파이프 블로킹**: PowerShell이 자식 프로세스 stdout을 `ReadToEnd()`로 수집 → 프로세스 종료 전까지 읽지 않음 → stdout 파이프 버퍼(64KB) 포화
+2. **서버 `Console.WriteLine` 블로킹**: SoakTest의 파이프 버퍼가 꽉 차면 `ServerProcess.ReadStdoutAsync`가 SoakTest stdout에 출력하지 못하고 블로킹 → 서버 stdout 파이프도 꽉 참 → 서버 `Console.WriteLine("[+] ...")` 블로킹
+3. **accept 루프 블로킹**: `SocketPipelineListener.AcceptLoopAsync`가 `await OnClientConnected(session)`를 기다리는 중, `OnClientConnected`가 `Console.WriteLine("[+]")` 후 `await session.SendAsync(MobHpPacket)` — `Console.WriteLine`이 블로킹되면 accept 루프도 블로킹
+4. **TCP backlog 포화 → ECONNREFUSED**: accept 루프가 블로킹된 사이 쌓이는 SYN 요청이 backlog(512) 초과 → 커널이 RST 전송 → 클라이언트 `WSAECONNREFUSED`
+
+**수정**: `run_soak.ps1`을 `BeginOutputReadLine()` + `ConcurrentBag<string>` 이벤트 방식으로 변경 → 파이프 실시간 소비 → 블로킹 연쇄 차단 → 전 테스트 PASS.
 
 ---
 
