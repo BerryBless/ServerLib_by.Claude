@@ -1,12 +1,28 @@
 using SoakTest;
+using SoakTest.Workloads;
 
 // ── CLI 파싱 ─────────────────────────────────────────────────────────────────
 var opt = SoakOptions.Parse(args);
 
+bool isTicketing = opt.Workload == WorkloadType.Ticketing;
+
 Console.WriteLine(
-    $"[SoakTest] 소크 테스트 시작 — clients={opt.Clients}  port={opt.Port}  " +
-    $"sends={opt.SendsPerConn}  churnDelay={opt.ChurnDelayMs}ms  " +
-    $"settle={opt.ReceiveSettleMs}ms  report={opt.ReportIntervalSec}s  attach={opt.Attach}");
+    $"[SoakTest] 소크 테스트 시작 — workload={opt.Workload}  clients={opt.Clients}  " +
+    $"port={opt.Port}  churnDelay={opt.ChurnDelayMs}ms  report={opt.ReportIntervalSec}s  attach={opt.Attach}");
+
+if (isTicketing)
+{
+    Console.WriteLine(
+        $"[SoakTest] [티켓팅] rows={opt.Rows}×cols={opt.Cols}={opt.Rows * opt.Cols}석  " +
+        $"K={opt.SeatsPerSession}  ttl={opt.TtlSeconds}s  payDelay={opt.PaymentDelayMs}ms  " +
+        $"contention={opt.Contention}  abandon={opt.AbandonRate:P0}  expire={opt.ExpireRate:P0}");
+}
+else
+{
+    Console.WriteLine(
+        $"[SoakTest] [Damage] sends={opt.SendsPerConn}  settle={opt.ReceiveSettleMs}ms");
+}
+
 Console.WriteLine("[SoakTest] 종료: Ctrl+C 또는 'q'+Enter 입력");
 
 // CancellationTokenSource: Ctrl+C + 'q' 입력을 단일 취소 신호로 통합
@@ -26,7 +42,16 @@ Console.CancelKeyPress += (_, e) =>
 ServerProcess? server = null;
 if (!opt.Attach)
 {
-    server = ServerProcess.TryStart(opt.Port, opt.AdminPort, monitorIntervalSec: 1);
+    // 티켓팅 모드: 서버에 티켓팅 config 오버라이드 주입
+    // MaxConnectionsPerIp: 전 클라가 127.0.0.1 → 기본 50 초과 시 거부 → 클라 수 × 2로 여유 확보
+    TicketingStartConfig? ticketCfg = isTicketing
+        ? new TicketingStartConfig(
+            opt.Rows, opt.Cols, opt.SeatsPerSession,
+            opt.TtlSeconds, opt.PaymentDelayMs,
+            MaxConnectionsPerIp: Math.Max(opt.Clients * 2, 100))
+        : null;
+
+    server = ServerProcess.TryStart(opt.Port, opt.AdminPort, monitorIntervalSec: 1, ticketCfg);
     if (server is null)
     {
         Environment.Exit(2);
@@ -58,13 +83,27 @@ var stats = new SoakStats();
 
 // ── N개 클라이언트 Task 기동 ─────────────────────────────────────────────────
 // Task.Run: 각 SoakClient.RunAsync를 독립 ThreadPool 작업으로 기동 — await 없이 병렬 실행
+// i: Select 파라미터이므로 각 람다가 고유한 i를 캡처 → clientId 충돌 없음
 var clientTasks = Enumerable.Range(0, opt.Clients)
-    .Select(_ => Task.Run(async () =>
+    .Select(i => Task.Run(async () =>
     {
-        var client = new SoakClient(
-            "127.0.0.1", opt.Port,
-            opt.SendsPerConn, opt.ChurnDelayMs, opt.ReceiveSettleMs,
-            stats);
+        // 워크로드 전략 선택: 연결 수명은 SoakClient, "무엇을 보낼 것인가"는 IWorkload
+        IWorkload workload = isTicketing
+            ? new TicketingWorkload(
+                clientId:       i,
+                seatsPerSession: opt.SeatsPerSession,
+                totalRows:       opt.Rows,
+                totalCols:       opt.Cols,
+                paymentDelayMs:  opt.PaymentDelayMs,
+                abandonRate:     opt.AbandonRate,
+                expireRate:      opt.ExpireRate,
+                ttlSeconds:      opt.TtlSeconds,
+                loginSettleMs:   opt.LoginSettleMs,
+                pattern:         opt.Contention,
+                stats:           stats)
+            : new DamageWorkload(opt.SendsPerConn, opt.ReceiveSettleMs, stats);
+
+        var client = new SoakClient("127.0.0.1", opt.Port, opt.ChurnDelayMs, stats, workload);
         try
         {
             await client.RunAsync(cts.Token);
@@ -106,13 +145,26 @@ var reporterTask = Task.Run(async () =>
         try { await Task.Delay(TimeSpan.FromSeconds(opt.ReportIntervalSec), cts.Token); }
         catch (OperationCanceledException) { break; }
 
-        var snap = server?.Latest;
-        Console.WriteLine(
+        var snap   = server?.Latest;
+        var ticket = server?.LatestTicket;
+
+        Console.Write(
             $"[PROGRESS]  cycles={stats.Cycles:N0}  conns={stats.Connects:N0}  " +
             $"sent={stats.Sent:N0}  recv={stats.Received:N0}  errs={stats.Errors}  " +
             $"serverSessions={snap?.Sessions ?? -1}  " +
             $"serverRecv={snap?.Received ?? -1:N0}  " +
             $"heap={(snap?.HeapBytes ?? 0) / 1024:N0}KB");
+
+        // 티켓팅 모드 추가 출력
+        if (isTicketing && ticket is not null)
+        {
+            Console.Write(
+                $"  | free={ticket.Free} res={ticket.Reserved} sold={ticket.Sold}" +
+                $"  rsv={stats.ReserveSent:N0} pay={stats.PaySent:N0}" +
+                $" abn={stats.AbandonCycles:N0} exp={stats.ExpireCycles:N0}");
+        }
+
+        Console.WriteLine();
     }
 });
 
@@ -123,20 +175,47 @@ Console.WriteLine("[SoakTest] 모든 클라이언트 종료 완료");
 
 // ── 서버 안정화 대기 ─────────────────────────────────────────────────────────
 // 중요: 반드시 서버에 'q'를 보내기 전에 권위 read를 수행해야 한다.
-// Stop() 이후 Pipe 버퍼가 폐기되면 in-flight 패킷이 유실 → false DataLoss 판정 발생.
+// Stop() 이후 Pipe 버퍼가 폐기되면 in-flight 패킷이 유실 → false DataLoss / SlotLeak 판정 발생.
 ServerStatsSnapshot? finalSnap = null;
 if (server is not null)
 {
-    Console.WriteLine("[SoakTest] 서버 안정화 대기 중 (sessions=0, received 안정)...");
-    finalSnap = await server.WaitForStabilityAsync(timeoutMs: 10_000);
+    // 티켓팅 모드: TTL-expire 사이클이 있으면 TTL + 여유 시간 확보
+    // - graceful 반납은 즉시(ReleaseAllByContext) → TTL 무관.
+    // - TTL-expire 반납은 스위퍼(~1s 주기) 처리 → TTL 경과 후 해소.
+    int stabilityTimeoutMs = isTicketing
+        ? Math.Max(10_000, opt.TtlSeconds * 1000 + 5_000)
+        : 10_000;
+
+    bool requireDrained = isTicketing; // expire 사이클이 없어도 안전하게 true
+
+    Console.WriteLine("[SoakTest] 서버 안정화 대기 중...");
+    finalSnap = await server.WaitForStabilityAsync(stabilityTimeoutMs, requireDrained);
     Console.WriteLine(
         $"[SoakTest] 안정화 완료  sessions={finalSnap.Sessions}  " +
         $"received={finalSnap.Received:N0}  sent={stats.Sent:N0}");
+
+    if (isTicketing && server.LatestTicket is { } ts)
+    {
+        Console.WriteLine(
+            $"[SoakTest] 최종 티켓 상태  free={ts.Free} reserved={ts.Reserved} sold={ts.Sold}" +
+            $"  totalReserved={ts.TotalReserved}  confirmed={ts.TotalConfirmed}");
+    }
 }
+
+// 최종 티켓 스냅샷 (권위 read: 'q' 이전에 확보)
+TicketSnapshot? finalTicketSnap = isTicketing ? server?.LatestTicket : null;
 
 // ── 판정 ─────────────────────────────────────────────────────────────────────
 bool crashed = server?.Crashed ?? false;
-var report   = SoakReport.Evaluate(stats, finalSnap, baselineHeap, crashed, opt.Attach);
+var report = SoakReport.Evaluate(
+    stats,
+    finalSnap,
+    baselineHeap,
+    crashed,
+    opt.Attach,
+    isTicketing:  isTicketing,
+    ticketSnap:   finalTicketSnap,
+    totalSeats:   opt.Rows * opt.Cols);
 report.Print();
 
 // ── 서버 종료 ────────────────────────────────────────────────────────────────
