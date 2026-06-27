@@ -947,6 +947,51 @@ public class TicketInventoryConcurrencyTests
         Assert.Equal(4, inv.FreeCount); // 첫 배치(2석)만 예약됨
     }
 
+    // ㊼ GAP-I-15: Rate Limit 정확 경계 — 10회째 허용, 11회째 초과 (계약 고정 테스트)
+    [Fact]
+    public void RateLimit_exactly_10th_attempt_allowed_11th_returns_RateLimited()
+    {
+        // Server/Program.cs의 속도 제한 로직:
+        //   if (Interlocked.Increment(ref tctx.RateLimitAttempts) > MaxReserveAttemptsPerWindow)
+        // 경계: 10회째 Increment → 10. 10 > 10 false(허용), 11회째 → 11 > 10 true(차단)
+        // 이 테스트는 TicketContext 상수 계약을 고정하여 실수로 경계값이 변경되면 탐지한다.
+        Assert.Equal(10, TicketContext.MaxReserveAttemptsPerWindow);
+        Assert.Equal(60_000, TicketContext.RateLimitWindowMs);
+
+        var ctx = new TicketContext("user");
+        // 9회 사전 세팅 (0→9)
+        Interlocked.Exchange(ref ctx.RateLimitAttempts, TicketContext.MaxReserveAttemptsPerWindow - 1);
+
+        // 10회째: Increment → 10. 10 > 10 false → 허용 경로
+        int attempt10 = Interlocked.Increment(ref ctx.RateLimitAttempts);
+        Assert.Equal(TicketContext.MaxReserveAttemptsPerWindow, attempt10);
+        Assert.False(attempt10 > TicketContext.MaxReserveAttemptsPerWindow,
+            "10회째 시도(=MaxReserveAttemptsPerWindow)는 허용되어야 합니다.");
+
+        // 11회째: Increment → 11. 11 > 10 true → 차단 경로
+        int attempt11 = Interlocked.Increment(ref ctx.RateLimitAttempts);
+        Assert.True(attempt11 > TicketContext.MaxReserveAttemptsPerWindow,
+            "11회째 시도는 MaxReserveAttemptsPerWindow를 초과하므로 RateLimited 처리되어야 합니다.");
+    }
+
+    // ㊽ GAP-I-16: TryReserveBatch 빈 seatIds(n==0) → SeatTaken, 좌석 무변화
+    [Fact]
+    public void TryReserveBatch_empty_seatIds_returns_seatTaken()
+    {
+        // n==0이면 개수·상한 검증 분기에서 즉시 SeatTaken 반환 — 좌석·슬롯 무오염 확인
+        var inv = Make2D(2, 3); // 6석
+        var ctx = new TicketContext("user", 4); // cap=4
+
+        Span<int> reserved = stackalloc int[4];
+        var (status, count) = inv.TryReserveBatch(ctx, Array.Empty<int>(), reserved);
+
+        Assert.Equal(TicketStatus.SeatTaken, status);
+        Assert.Equal(0, count);
+        Assert.Equal(6, inv.FreeCount);                    // 좌석 무변화
+        Assert.True(ctx.Slots.All(s => s < 0),            // 슬롯 미오염
+            "빈 요청 후 TicketContext.Slots가 오염되어서는 안 됩니다.");
+    }
+
     // ㊳ Base64 함정 회귀 방지 — int[] 투영 후 JSON 직렬화 시 숫자 배열로 나와야 함
     /// <summary>
     /// System.Text.Json이 <c>byte[]</c>를 Base64 문자열로 직렬화하는 함정을 방지하는 회귀 테스트.

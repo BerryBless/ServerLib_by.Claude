@@ -47,4 +47,26 @@ public class DbMetricsTests
         Assert.Equal(0, s.RedisSetAvgUs);
         Assert.Equal(0, s.RedisGetAvgUs);
     }
+
+    // ── GAP-I-09: 동시성 카운터 정확성 (Interlocked 명세 검증) ──────────────────────────
+    [Fact]
+    public void RecordMysqlSelect_Concurrent_CountIsAccurate()
+    {
+        // Interlocked.Add + Interlocked.Increment: N개 스레드 동시 호출 후 Count == N
+        var m = new DbMetrics();
+        const int N = 1_000;
+        Parallel.For(0, N, _ => m.RecordMysqlSelect(100L));
+        var s = m.GetSnapshot();
+        Assert.Equal(N, s.MysqlCount);
+    }
+
+    [Fact]
+    public void RecordRedisSet_Concurrent_CountIsAccurate()
+    {
+        var m = new DbMetrics();
+        const int N = 1_000;
+        Parallel.For(0, N, _ => m.RecordRedisSet(50L));
+        var s = m.GetSnapshot();
+        Assert.Equal(N, s.RedisSetCount);
+    }
 }

@@ -162,6 +162,7 @@ public class TicketPacketRoundTripTests
     [InlineData(TicketStatus.PaymentFailed,  0, (byte)0xFF, 2)]
     [InlineData(TicketStatus.Released,       1, (byte)1,    3)]
     [InlineData(TicketStatus.SeatTaken,      0, (byte)0xFF, 5)]
+    [InlineData(TicketStatus.RateLimited,    0, (byte)0xFF, 0)] // GAP-I-17: RateLimited 상태 라운드트립
     public void TicketResult_roundtrip_preserves_all_fields(
         TicketStatus status, byte count, byte seatId, byte remaining)
     {

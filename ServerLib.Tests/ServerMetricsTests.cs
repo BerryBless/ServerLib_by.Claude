@@ -83,4 +83,35 @@ public class ServerMetricsTests
         Assert.Equal(0, metrics.TotalBytesSent);
         Assert.Equal(0, metrics.TotalBytesReceived);
     }
+
+    // ── GAP-I-13: 음수 count 입력 — 가드 없음, 명세로 고정 ────────────────────────────────
+    [Fact]
+    public void OnBytesSent_negative_count_decrements_total()
+    {
+        // Interlocked.Add에 가드 없음 — 음수 값은 누적을 감소시킨다. 이 동작을 명세화.
+        var metrics = new ServerMetrics();
+        metrics.OnBytesSent(100);
+        metrics.OnBytesSent(-30);
+        Assert.Equal(70, metrics.TotalBytesSent);
+    }
+
+    [Fact]
+    public void OnBytesReceived_negative_count_decrements_total()
+    {
+        var metrics = new ServerMetrics();
+        metrics.OnBytesReceived(200);
+        metrics.OnBytesReceived(-50);
+        Assert.Equal(150, metrics.TotalBytesReceived);
+    }
+
+    // ── GAP-I-14: 동시성 카운터 정확성 ────────────────────────────────────────────────────
+    [Fact]
+    public void Concurrent_OnPacketReceived_CountIsAccurate()
+    {
+        // Interlocked.Increment: N개 Task 동시 호출 → 최종 카운터 == N
+        var metrics = new ServerMetrics();
+        const int N = 500;
+        Parallel.For(0, N, _ => metrics.OnPacketReceived());
+        Assert.Equal(N, metrics.TotalPacketsReceived);
+    }
 }

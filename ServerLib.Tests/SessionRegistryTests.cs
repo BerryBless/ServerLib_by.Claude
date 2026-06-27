@@ -152,4 +152,32 @@ public sealed class SessionRegistryTests
 
         Assert.Equal(1, registry.Count);
     }
+
+    // ── GAP-I-10: 존재하지 않는 ID로 Unregister → 예외 없음, Count 불변 ────────────
+    [Fact]
+    public void Unregister_nonexistent_id_does_not_throw()
+    {
+        // ConcurrentDictionary.TryRemove는 미존재 키를 조용히 무시한다
+        var registry = new SessionRegistry();
+        var ex = Record.Exception(() => registry.Unregister(Guid.NewGuid()));
+        Assert.Null(ex);
+        Assert.Equal(0, registry.Count);
+    }
+
+    // ── GAP-I-11: N개 동시 Register/Unregister → Count 정확성 ───────────────────────
+    [Fact]
+    public async Task ConcurrentRegisterUnregister_CountIsNonNegative()
+    {
+        // ConcurrentDictionary: N개 동시 Register 후 Count==N, N개 동시 Unregister 후 Count==0
+        var registry = new SessionRegistry();
+        const int N = 100;
+        var sessions = Enumerable.Range(0, N).Select(_ => new FakeSession()).ToArray();
+
+        await Task.WhenAll(sessions.Select(s => Task.Run(() => registry.Register(s))));
+        Assert.Equal(N, registry.Count);
+
+        await Task.WhenAll(sessions.Select(s => Task.Run(() => registry.Unregister(s.SessionId))));
+        Assert.True(registry.Count >= 0, "Count는 음수가 될 수 없습니다.");
+        Assert.Equal(0, registry.Count);
+    }
 }

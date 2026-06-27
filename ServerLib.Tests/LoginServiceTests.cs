@@ -285,4 +285,57 @@ public class LoginServiceTests
         Assert.NotEqual(results[0].Token, results[1].Token);
         Assert.Equal(2, tokenStore.Stored.Count);
     }
+
+    // ── GAP-I-07: 이미 취소된 CancellationToken 전달 시 TaskCanceledException 전파 ─────────
+    [Fact]
+    public async Task LoginAsync_CancelledToken_ThrowsOperationCanceledException()
+    {
+        // Task.Run(verify, cancelledToken)은 즉시 TaskCanceledException(←OperationCanceledException) 발생
+        var store = new FakeUserStore();
+        store.Add(1, "alice", "p@ssword", iterations: 1_000);
+        var svc = BuildService(store, new FakeTokenStore());
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel(); // pre-cancelled
+
+        // ThrowsAnyAsync: TaskCanceledException(파생 타입)을 포함해 허용
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => svc.LoginAsync("alice", "p@ssword", cts.Token));
+    }
+
+    // ── GAP-I-08: DbMetrics 계측 경로 ────────────────────────────────────────────────────
+    [Fact]
+    public async Task LoginAsync_WithDbMetrics_SuccessPath_RecordsMysqlAndRedis()
+    {
+        // 성공 경로: MySQL SELECT 1회 + Redis SET 1회(토큰 저장) 기록
+        // BuildService는 dbMetrics를 지원하지 않으므로 생성자 직접 호출
+        var store = new FakeUserStore();
+        store.Add(1, "alice", "p@ssword", iterations: 1_000);
+        var tokenStore = new FakeTokenStore();
+        var dbMetrics = new DbMetrics();
+        var svc = new LoginService(store, tokenStore, TimeSpan.FromHours(1), 1_000, dbMetrics);
+
+        await svc.LoginAsync("alice", "p@ssword");
+
+        var snap = dbMetrics.GetSnapshot();
+        Assert.Equal(1, snap.MysqlCount);    // 사용자 조회 1회
+        Assert.Equal(1, snap.RedisSetCount); // 토큰 저장 1회
+    }
+
+    [Fact]
+    public async Task LoginAsync_WithDbMetrics_FailedAuth_RecordsMysqlOnly()
+    {
+        // 인증 실패(비밀번호 불일치): MySQL 기록됨, Redis 기록 안 됨
+        var store = new FakeUserStore();
+        store.Add(1, "alice", "p@ssword", iterations: 1_000);
+        var tokenStore = new FakeTokenStore();
+        var dbMetrics = new DbMetrics();
+        var svc = new LoginService(store, tokenStore, TimeSpan.FromHours(1), 1_000, dbMetrics);
+
+        await svc.LoginAsync("alice", "wrong-password"); // 인증 실패
+
+        var snap = dbMetrics.GetSnapshot();
+        Assert.Equal(1, snap.MysqlCount);    // 사용자 조회 1회
+        Assert.Equal(0, snap.RedisSetCount); // 실패 → 토큰 저장 없음
+    }
 }
