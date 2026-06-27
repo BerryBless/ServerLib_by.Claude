@@ -1,3 +1,5 @@
+using Xunit;
+
 namespace DbPerfTest.Tests;
 
 public class PlaceholderTests
