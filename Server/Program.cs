@@ -28,6 +28,8 @@ ConnectionMultiplexer? redis = null;
 // RedisTokenStore: EnableLogin(토큰 저장)·RequireAuth(토큰 검증) 양쪽에서 공유 — 인스턴스 분리 금지.
 RedisTokenStore? tokenStore = null;
 LoginService? loginService = null;
+// DbMetrics: EnableLogin·RequireAuth 활성 시에만 생성 — IO 스레드에서 RecordXxx, 모니터 루프에서 GetSnapshot
+DbMetrics? dbMetrics = null;
 // EnableLogin: 게임 서버 자체 로그인 기능. RequireAuth: Redis 토큰 게이팅(AuthServer 연계).
 // 두 기능 중 하나라도 활성화이면 Redis 연결 필요.
 // EnableTicketing: 더미 로그인+선착순 티켓 — loginService·tokenStore와 무관하게 별도 초기화.
@@ -60,6 +62,8 @@ if (cfg.Features.EnableLogin || cfg.Features.RequireAuth)
     // RedisTokenStore: 게임서버 토큰 검증(RequireAuth)·LoginService 토큰 저장(EnableLogin) 공유.
     // ConnectionMultiplexer는 멀티플렉싱으로 동시 호출 안전 — 단일 인스턴스 공유 가능.
     tokenStore = new RedisTokenStore(redis);
+    // DbMetrics: lock-free 누적 카운터 — IO 스레드에서 RecordXxx 호출, 모니터 루프에서 GetSnapshot 읽기
+    dbMetrics = new DbMetrics();
 
     if (cfg.Features.EnableLogin)
     {
@@ -73,7 +77,8 @@ if (cfg.Features.EnableLogin || cfg.Features.RequireAuth)
             new MySqlUserStore(cfg.Auth.MySqlConnectionString),
             tokenStore,
             TimeSpan.FromSeconds(cfg.Auth.TokenTtlSeconds),
-            cfg.Auth.PbkdfIterations);
+            cfg.Auth.PbkdfIterations,
+            dbMetrics);
         Console.WriteLine($"[Login] 인증 모듈 초기화 완료 (MySQL+Redis)  tokenTtl={cfg.Auth.TokenTtlSeconds}s  pbkdf={cfg.Auth.PbkdfIterations}iter");
     }
     else
@@ -237,8 +242,12 @@ listener.OnReceived = async (session, data) =>
         // AuthTokenPacket(Id=12): 클라이언트가 AuthServer에서 발급받은 토큰을 게임 서버에 제시.
         // Redis에서 토큰 존재·유효성을 검증(1 RTT) — 유효하면 세션을 Authenticated 상태로 전이.
         var tok = serializer.Deserialize<AuthTokenPacket>(data.Span);
+        // Stopwatch: 순수 Redis GET RTT 계측 — PBKDF2 없는 유일한 DB read 경로
+        long gateSw = Stopwatch.GetTimestamp();
         // TryResolveAsync: Redis GET 1 RTT — userId·username 동시 복원(Non-blocking, StackExchange.Redis 파이프라이닝)
         var info = await tokenStore.TryResolveAsync(tok.Token);
+        dbMetrics?.RecordRedisGet(
+            (Stopwatch.GetTimestamp() - gateSw) * 1_000_000L / Stopwatch.Frequency);
         bool ok = info is not null;
         // LoginResponsePacket 재사용: 별도 ack 패킷 불필요 — 클라이언트 OnReceived의 기존 분기 재사용
         await session.SendAsync(new LoginResponsePacket { Success = ok, Token = ok ? tok.Token : string.Empty });
@@ -605,6 +614,19 @@ _ = Task.Run(async () =>
                           $"allocBytes={GC.GetTotalAllocatedBytes()} " +
                           $"gen0={GC.CollectionCount(0)} " +
                           $"gen2={GC.CollectionCount(2)}");
+        // [DBSTATS]: DbPerfTest 하네스가 머신 파싱하는 DB 연산 평균 지연 신호.
+        // [STATS]와 동일한 ASCII key=value 형식. EnableLogin/RequireAuth가 비활성이면 출력 안 됨.
+        if (dbMetrics is not null)
+        {
+            var ds = dbMetrics.GetSnapshot();
+            Console.WriteLine(
+                $"[DBSTATS] mysqlSelectAvgUs={ds.MysqlSelectAvgUs} " +
+                $"redisGetAvgUs={ds.RedisGetAvgUs} " +
+                $"redisSetAvgUs={ds.RedisSetAvgUs} " +
+                $"mysqlCount={ds.MysqlCount} " +
+                $"redisGetCount={ds.RedisGetCount} " +
+                $"redisSetCount={ds.RedisSetCount}");
+        }
         // [TICKET]: 티켓팅 모드 전용 — 좌석 현황 + 누적 KPI 신호. [STATS]는 SoakTest 파싱 계약이므로 수정 금지.
         if (ticketInventory is not null)
         {

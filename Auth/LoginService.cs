@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 
 namespace Server.Auth;
@@ -23,6 +24,8 @@ public sealed class LoginService
     private readonly ITokenStore _tokenStore;
     private readonly TimeSpan _tokenTtl;
     private readonly int _pbkdfIterations;
+    // DbMetrics?: null이면 계측 비활성 — 하위호환 유지
+    private readonly DbMetrics? _dbMetrics;
 
     // CWE-208 타이밍 열거 방어: 존재하지 않는 사용자에 대해서도 동일한 PBKDF2 비용을 소비해
     // "사용자 존재" vs "비밀번호 불일치"를 응답 지연으로 구분할 수 없게 한다.
@@ -34,12 +37,15 @@ public sealed class LoginService
     /// <param name="tokenStore">토큰 저장소 구현체입니다.</param>
     /// <param name="tokenTtl">발급 토큰의 유효 기간입니다.</param>
     /// <param name="pbkdfIterations">PBKDF2 반복 횟수입니다. SeedAsync에 전달한 값과 반드시 일치해야 합니다.</param>
-    public LoginService(IUserStore userStore, ITokenStore tokenStore, TimeSpan tokenTtl, int pbkdfIterations)
+    /// <param name="dbMetrics">DB 연산 지연 계측기입니다. null이면 계측을 비활성화합니다(하위호환).</param>
+    public LoginService(IUserStore userStore, ITokenStore tokenStore, TimeSpan tokenTtl, int pbkdfIterations,
+        DbMetrics? dbMetrics = null)
     {
         _userStore       = userStore;
         _tokenStore      = tokenStore;
         _tokenTtl        = tokenTtl;
         _pbkdfIterations = pbkdfIterations;
+        _dbMetrics       = dbMetrics;
     }
 
     /// <summary>사용자 이름과 비밀번호로 로그인합니다.</summary>
@@ -49,8 +55,11 @@ public sealed class LoginService
     /// <returns>로그인 결과입니다. 실패 시 <see cref="LoginResult.Success"/>가 false이며 Token이 빈 문자열입니다.</returns>
     public async Task<LoginResult> LoginAsync(string username, string password, CancellationToken ct = default)
     {
-        // ① MySQL 사용자 조회
+        // ① MySQL 사용자 조회 — Stopwatch로 순수 DB RTT 계측 (PBKDF2 포함 안 됨)
+        long sw = Stopwatch.GetTimestamp();
         var user = await _userStore.FindByUsernameAsync(username, ct);
+        _dbMetrics?.RecordMysqlSelect(
+            (Stopwatch.GetTimestamp() - sw) * 1_000_000L / Stopwatch.Frequency);
         if (user is null)
         {
             // CWE-208 방어: 사용자가 없더라도 더미 PBKDF2를 동일 반복수로 수행해 응답 지연을 균일화.
@@ -77,7 +86,11 @@ public sealed class LoginService
             .TrimEnd('=');      // padding 제거
 
         // ④ Redis 토큰 저장(TTL 첨부): userId·username을 함께 저장해 게이팅 경로에서 AuthContext.Username 복원 가능하게 함
+        // Redis SET RTT 계측 — PBKDF2 완료 후 순수 Redis 구간만 측정
+        sw = Stopwatch.GetTimestamp();
         await _tokenStore.StoreAsync(token, user.Id, user.Username, _tokenTtl, ct);
+        _dbMetrics?.RecordRedisSet(
+            (Stopwatch.GetTimestamp() - sw) * 1_000_000L / Stopwatch.Frequency);
 
         return new LoginResult(true, user.Id, user.Username, token);
     }
