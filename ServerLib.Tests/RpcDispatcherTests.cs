@@ -142,4 +142,37 @@ public sealed class RpcDispatcherTests
         var ex = await Record.ExceptionAsync(() => dispatcher.DispatchAsync(session, payload).AsTask());
         Assert.Null(ex);
     }
+
+    // ── GAP-C-05: 핸들러에서 발생한 예외가 DispatchAsync 호출자로 전파된다 ──────────
+    [Fact]
+    public async Task Handler_throwing_exception_propagates_to_caller()
+    {
+        // 핸들러가 던진 예외는 await를 통해 호출자에게 전파되어야 한다 (삼켜지면 안 됨)
+        var dispatcher = new RpcDispatcher();
+        var session = new FakeSession();
+
+        dispatcher.Register(1, (_, _, _) => throw new InvalidOperationException("boom"));
+
+        // packetId=1(LE: 0x01, 0x00), body 없음
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => dispatcher.DispatchAsync(session, new byte[] { 0x01, 0x00 }).AsTask());
+    }
+
+    // ── GAP-I-12: 동일 packetId 이중 등록 → 마지막 핸들러가 우선한다 ──────────────
+    [Fact]
+    public async Task Register_same_packetId_twice_last_handler_wins()
+    {
+        // 같은 packetId에 두 번 Register → _handlers[id] 덮어쓰기 → 두 번째 핸들러 호출
+        var dispatcher = new RpcDispatcher();
+        var session = new FakeSession();
+        int calledHandler = 0;
+
+        dispatcher.Register(5, (_, _, _) => { calledHandler = 1; return ValueTask.CompletedTask; });
+        dispatcher.Register(5, (_, _, _) => { calledHandler = 2; return ValueTask.CompletedTask; }); // 덮어쓰기
+
+        // packetId=5(LE: 0x05, 0x00)
+        await dispatcher.DispatchAsync(session, new byte[] { 0x05, 0x00 });
+
+        Assert.Equal(2, calledHandler); // 두 번째 핸들러만 호출됨
+    }
 }

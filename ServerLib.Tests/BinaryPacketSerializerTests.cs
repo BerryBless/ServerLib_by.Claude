@@ -119,4 +119,21 @@ public class BinaryPacketSerializerTests
         Assert.Equal(1, buf[0]); // 하위 바이트
         Assert.Equal(0, buf[1]); // 상위 바이트
     }
+
+    // ── GAP-I-06: 잘린 본문 → EndOfStreamException ────────────────────────────────────────
+    [Fact]
+    public void Deserialize_throws_EndOfStreamException_when_body_truncated()
+    {
+        // 헤더: PacketId=1, BodyLength=10 클레임 — 그러나 실제 버퍼는 헤더(4B)만 존재
+        // SpanReader가 EchoPacket.Deserialize → ReadString → EnsureAvailable(2) 시 EndOfStreamException
+        var serializer = new BinaryPacketSerializer();
+        byte[] buf = new byte[PacketPool.HeaderSize]; // 헤더만, 본문 없음
+        buf[0] = 1; buf[1] = 0;   // PacketId = 1 (EchoPacket), LE
+        buf[2] = 10; buf[3] = 0;  // BodyLength = 10(클레임), 실제 없음
+
+        bool threw = false;
+        try { serializer.Deserialize<EchoPacket>(buf); }
+        catch (EndOfStreamException) { threw = true; }
+        Assert.True(threw, "잘린 본문 버퍼는 EndOfStreamException을 던져야 합니다.");
+    }
 }
