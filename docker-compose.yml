@@ -1,0 +1,30 @@
+# docker-compose.yml — DbPerfTest 인프라
+# 사용법: docker compose up -d
+# MySQL 최초 init 시간 ~30s → 헬스체크로 DB-ready 게이트 확보
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: gamedb
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./Auth/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ppassword"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
