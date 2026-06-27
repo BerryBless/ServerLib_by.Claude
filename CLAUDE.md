@@ -81,6 +81,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/ticketing_monitoring_review_0623.md` | 2026-06-23 | 티켓팅 모니터링 7차원 종합 코드 리뷰 (SEC-MON-01~03·ARCH-NEW-01·SEC-NEW-03·STYLE-01 등 High 1건+Medium 5건 → 리뷰 당일 전량 수정 완료, 종합 86→92점 예상) |
 | `plan/ticketing_multiseat_0624.md` | 2026-06-24 | 배치 멀티 좌석 티켓팅 (TicketContext.Slots[]·TryReserveBatch·ConfirmAll·ReleaseAll All-or-nothing, 배치 와이어 포맷, MaxSeatsPerSession 설정, 172 테스트) |
 | `plan/dbperf_test_0627.md` | 2026-06-27 | DB 포함 성능 테스트 하네스 (closed-loop login·token-resolve, [DBSTATS] 순수 DB 지연 분리, docker-compose) |
+| `plan/test_review_0628.md` | 2026-06-28 | ServerLib.Tests 종합 코드 리뷰 (품질 감사+커버리지 갭, QUALITY-I 4건 수정·GAP-C/I 22건 신규 추가, 210 테스트) |
 
 ---
 
