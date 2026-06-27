@@ -62,7 +62,12 @@ public class PasswordHasherTests
     /// schema.sql 시드가 필요할 때 이 테스트를 실행하고 출력을 MySQL에 붙여 넣으세요.
     /// (방법 B — schema.sql 주석 참조)
     /// </summary>
-    [Fact]
+    /// <remarks>
+    /// QUALITY-I-03: iterations 기본값(100,000회 PBKDF2)을 사용하여 CI에서 수십 ms를 낭비하고
+    /// Console.WriteLine 사이드이펙트가 있는 순수 단위 테스트 위반 도구성 메서드이므로 Skip 처리.
+    /// 로컬에서 수동 실행: dotnet test --filter PasswordHasher_GenerateSeedSql
+    /// </remarks>
+    [Fact(Skip = "manual seed tool — run locally")]
     public void PasswordHasher_GenerateSeedSql()
     {
         const string username = "admin";

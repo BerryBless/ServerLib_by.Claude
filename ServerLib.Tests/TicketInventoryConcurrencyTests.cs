@@ -893,9 +893,11 @@ public class TicketInventoryConcurrencyTests
         Assert.Equal(2, m.TotalPaymentFailed);
     }
 
-    // ㊺ SweepExpired 배치 컨텍스트: {0,1} 보유, 0만 만료 → entry 0만 해제, entry 1 잔존
+    // ㊺ SweepExpired 배치 컨텍스트: ctx(seat 0, 만료) + ctx2(seat 1, 유효) → ctx entry만 해제, ctx2 잔존
+    // QUALITY-I-04: 원래 "단일 배치 컨텍스트의 만료된 슬롯만 반납"을 암시하는 이름이었으나
+    // 실제로는 두 개의 독립 컨텍스트를 사용하므로 이름을 실제 시나리오에 맞게 정정한다.
     [Fact]
-    public void SweepExpired_releases_only_expired_slot_in_batch_context()
+    public void SweepExpired_releases_ctx1_seat_not_ctx2_fresh_seat()
     {
         // TTL 1ms — seat 0를 만료시키고 seat 1을 TTL 내에 유지
         var inv  = new TicketInventory(1, 4, TimeSpan.FromMilliseconds(1));

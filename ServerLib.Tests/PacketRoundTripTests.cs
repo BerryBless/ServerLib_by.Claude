@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Xunit;
 using ServerLib.Core.Serialization;
 using ServerLib.Core.Memory;
@@ -42,30 +43,41 @@ public class PacketRoundTripTests
     [Fact]
     public void IncrementPacket_roundtrip()
     {
-        // struct, 본문 없음 — PacketId 보존 확인
+        // struct, 본문 없음 — 헤더 4바이트만 직렬화되었는지 와이어 수준에서 검증
         var serializer = Serializer;
         var packet = new IncrementPacket();
         // bodySize=0이므로 버퍼는 헤더 4바이트만
         byte[] buf = new byte[PacketPool.HeaderSize + packet.GetBodySize()];
         serializer.Serialize(packet, buf);
 
-        var p2 = serializer.Deserialize<IncrementPacket>(buf);
+        // 헤더 직접 검증: 직렬화기가 망가져도 PacketId 상수는 항상 3이므로
+        // 버퍼의 와이어 바이트를 확인해야 실질적인 역직렬화 경로를 보장한다.
+        Assert.Equal(PacketPool.HeaderSize, buf.Length);                                     // 본문 없이 헤더만
+        Assert.Equal((ushort)IncrementPacket.Id, BinaryPrimitives.ReadUInt16LittleEndian(buf));    // PacketId LE
+        Assert.Equal((ushort)0, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(2)));    // BodyLength=0
 
-        Assert.Equal((ushort)3, p2.PacketId);
+        var p2 = serializer.Deserialize<IncrementPacket>(buf);
+        Assert.Equal(IncrementPacket.Id, p2.PacketId);
+        Assert.Equal(0, p2.GetBodySize());
     }
 
     [Fact]
     public void DecrementPacket_roundtrip()
     {
-        // struct, 본문 없음 — PacketId 보존 확인
+        // struct, 본문 없음 — 헤더 4바이트만 직렬화되었는지 와이어 수준에서 검증
         var serializer = Serializer;
         var packet = new DecrementPacket();
         byte[] buf = new byte[PacketPool.HeaderSize + packet.GetBodySize()];
         serializer.Serialize(packet, buf);
 
-        var p2 = serializer.Deserialize<DecrementPacket>(buf);
+        // 헤더 직접 검증
+        Assert.Equal(PacketPool.HeaderSize, buf.Length);
+        Assert.Equal((ushort)DecrementPacket.Id, BinaryPrimitives.ReadUInt16LittleEndian(buf));
+        Assert.Equal((ushort)0, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(2)));
 
-        Assert.Equal((ushort)4, p2.PacketId);
+        var p2 = serializer.Deserialize<DecrementPacket>(buf);
+        Assert.Equal(DecrementPacket.Id, p2.PacketId);
+        Assert.Equal(0, p2.GetBodySize());
     }
 
     [Fact]
@@ -119,15 +131,20 @@ public class PacketRoundTripTests
     [Fact]
     public void StatsRequestPacket_roundtrip()
     {
-        // struct, 본문 없음 — PacketId 보존 확인
+        // struct, 본문 없음 — 헤더 4바이트만 직렬화되었는지 와이어 수준에서 검증
         var serializer = Serializer;
         var packet = new StatsRequestPacket();
         byte[] buf = new byte[PacketPool.HeaderSize + packet.GetBodySize()];
         serializer.Serialize(packet, buf);
 
-        var p2 = serializer.Deserialize<StatsRequestPacket>(buf);
+        // 헤더 직접 검증
+        Assert.Equal(PacketPool.HeaderSize, buf.Length);
+        Assert.Equal((ushort)StatsRequestPacket.Id, BinaryPrimitives.ReadUInt16LittleEndian(buf));
+        Assert.Equal((ushort)0, BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(2)));
 
-        Assert.Equal((ushort)8, p2.PacketId);
+        var p2 = serializer.Deserialize<StatsRequestPacket>(buf);
+        Assert.Equal(StatsRequestPacket.Id, p2.PacketId);
+        Assert.Equal(0, p2.GetBodySize());
     }
 
     [Fact]

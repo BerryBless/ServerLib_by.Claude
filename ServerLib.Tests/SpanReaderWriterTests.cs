@@ -126,8 +126,10 @@ public class SpanReaderWriterTests
     }
 
     [Fact]
-    public void Position_and_Remaining_track_correctly()
+    public void SpanWriter_Position_and_Remaining_track_correctly()
     {
+        // QUALITY-I-02: 테스트명이 양쪽 타입을 모두 커버한다는 오해를 유발하므로
+        // SpanWriter 전용임을 명확히 한다. SpanReader 검증은 별도 테스트로 분리.
         const int bufSize = 16;
         byte[] buf = new byte[bufSize];
         var writer = new SpanWriter(buf);
@@ -135,6 +137,25 @@ public class SpanReaderWriterTests
 
         Assert.Equal(4, writer.Position);
         Assert.Equal(bufSize - 4, writer.Remaining);
+    }
+
+    [Fact]
+    public void SpanReader_Position_and_Remaining_track_correctly()
+    {
+        // QUALITY-I-02: SpanReader의 Position·Remaining 프로퍼티 검증
+        const int bufSize = 16;
+        byte[] buf = new byte[bufSize];
+        var writer = new SpanWriter(buf);
+        writer.WriteInt32(42);
+        writer.WriteInt32(99);
+
+        var reader = new SpanReader(buf);
+        Assert.Equal(0, reader.Position);
+        Assert.Equal(bufSize, reader.Remaining);
+
+        reader.ReadInt32(); // 4바이트 소비
+        Assert.Equal(4, reader.Position);
+        Assert.Equal(bufSize - 4, reader.Remaining);
     }
 
     // ─── A2 Security regression: SpanReader ──────────────────────────────────
