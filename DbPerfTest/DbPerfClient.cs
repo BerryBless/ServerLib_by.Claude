@@ -76,8 +76,15 @@ public sealed class DbPerfClient
 
         conn.OnReceived = data =>
         {
-            // Span은 콜백 기간(IO 스레드 context)만 유효 → ToArray()로 byte[] 복사 후 Channel에 enqueue
-            inbox.Writer.TryWrite(data.Span.ToArray());
+            // PacketId(헤더 첫 2바이트 LE ushort)를 확인해 LoginResponsePacket(Id=11)만 큐잉.
+            // MobHpPacket(Id=6) 등 보스몹 브로드캐스트가 먼저 도착하면 ReadNextAsync가 잘못된 프레임을
+            // LoginResponsePacket으로 역직렬화해 closed-loop 상관관계가 영구 파괴된다.
+            if (data.Length >= 2)
+            {
+                ushort pid = (ushort)(data.Span[0] | (data.Span[1] << 8));
+                if (pid == LoginResponsePacket.Id)
+                    inbox.Writer.TryWrite(data.Span.ToArray());
+            }
             return ValueTask.CompletedTask;
         };
 
@@ -122,7 +129,13 @@ public sealed class DbPerfClient
                 }
             }
         }
-        catch (OperationCanceledException) { /* 정상 취소 — 루프 종료 */ }
+        catch (OperationCanceledException)
+        {
+            // ct가 살아있으면 10s 타임아웃 fired — 서버 hang 탐지, 에러로 집계
+            // ct가 취소됐으면 정상 종료 신호
+            if (!ct.IsCancellationRequested)
+                _stats.IncError();
+        }
         catch (Exception ex)
         {
             _stats.IncError();

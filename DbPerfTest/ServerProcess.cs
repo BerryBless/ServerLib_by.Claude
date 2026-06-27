@@ -83,27 +83,8 @@ public sealed class ServerProcess : IAsyncDisposable
 
         // EnableLogin=true: MySQL+Redis 계측 경로 활성화 필수
         // SeedTestUser=true: 최초 기동 시 테스트 유저 자동 삽입
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"--Server:Port={port} ");
-        sb.Append($"--Server:AdminPort={adminPort} ");
-        sb.Append($"--Server:MonitorIntervalSeconds={monitorIntervalSec} ");
-        sb.Append($"--Server:Features:EnableLogin=true ");
-        sb.Append($"--Server:Auth:SeedTestUser=true ");
-        // MaxConnectionsPerIp: 모든 클라가 127.0.0.1 → 기본값 초과 방지
-        sb.Append($"--Server:MaxConnectionsPerIp={Math.Max(opt.Clients * 2, 100)}");
-
-        if (opt.RedisConn is { } rc)
-            sb.Append($" --Server:Auth:RedisConnectionString={rc}");
-        if (opt.MySqlConn is { } mc)
-            sb.Append($" --Server:Auth:MySqlConnectionString={mc}");
-        if (opt.PbkdfIterations is { } pi)
-            sb.Append($" --Server:Auth:PbkdfIterations={pi}");
-        if (opt.Username != "admin")
-            sb.Append($" --Server:Auth:SeedUsername={opt.Username}");
-        if (opt.Password != "password123")
-            sb.Append($" --Server:Auth:SeedPassword={opt.Password}");
-
-        var psi = new ProcessStartInfo(exePath, sb.ToString())
+        // ArgumentList: 각 인자를 독립 argv — 공백 포함 연결 문자열도 분리되지 않음
+        var psi = new ProcessStartInfo(exePath)
         {
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
@@ -111,6 +92,24 @@ public sealed class ServerProcess : IAsyncDisposable
             UseShellExecute = false,
             CreateNoWindow  = true,
         };
+        psi.ArgumentList.Add($"--Server:Port={port}");
+        psi.ArgumentList.Add($"--Server:AdminPort={adminPort}");
+        psi.ArgumentList.Add($"--Server:MonitorIntervalSeconds={monitorIntervalSec}");
+        psi.ArgumentList.Add("--Server:Features:EnableLogin=true");
+        psi.ArgumentList.Add("--Server:Auth:SeedTestUser=true");
+        // MaxConnectionsPerIp: 모든 클라가 127.0.0.1 → 기본값 초과 방지
+        psi.ArgumentList.Add($"--Server:MaxConnectionsPerIp={Math.Max(opt.Clients * 2, 100)}");
+
+        if (opt.RedisConn is { } rc)
+            psi.ArgumentList.Add($"--Server:Auth:RedisConnectionString={rc}");
+        if (opt.MySqlConn is { } mc)
+            psi.ArgumentList.Add($"--Server:Auth:MySqlConnectionString={mc}");
+        if (opt.PbkdfIterations is { } pi)
+            psi.ArgumentList.Add($"--Server:Auth:PbkdfIterations={pi}");
+        if (opt.Username != "admin")
+            psi.ArgumentList.Add($"--Server:Auth:SeedUsername={opt.Username}");
+        if (opt.Password != "password123")
+            psi.ArgumentList.Add($"--Server:Auth:SeedPassword={opt.Password}");
 
         var proc = Process.Start(psi);
         if (proc is null)
