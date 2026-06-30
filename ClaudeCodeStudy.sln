@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EchoServer", "EchoServer\Ec
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EchoClient", "EchoClient\EchoClient.csproj", "{60BB2B73-6241-41F1-815E-F4249DF76642}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EchoExample.Tests", "EchoExample.Tests\EchoExample.Tests.csproj", "{24BB454D-D8E7-4717-AE40-E2C56C5B4574}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -52,6 +54,18 @@ Global
 		{60BB2B73-6241-41F1-815E-F4249DF76642}.Release|x64.Build.0 = Release|Any CPU
 		{60BB2B73-6241-41F1-815E-F4249DF76642}.Release|x86.ActiveCfg = Release|Any CPU
 		{60BB2B73-6241-41F1-815E-F4249DF76642}.Release|x86.Build.0 = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|x64.Build.0 = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Debug|x86.Build.0 = Debug|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|x64.ActiveCfg = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|x64.Build.0 = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|x86.ActiveCfg = Release|Any CPU
+		{24BB454D-D8E7-4717-AE40-E2C56C5B4574}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
