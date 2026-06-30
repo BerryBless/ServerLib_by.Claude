@@ -17,6 +17,7 @@
 //   listener.Stop()                  — 서버 종료
 // =============================================================================
 
+using System.Net;
 using ServerLib;
 using ServerLib.Core.Serialization;
 using ServerLib.Core.Serialization.Packets;
@@ -58,7 +59,9 @@ listener.OnClientDisconnected = (ISession session) =>
     return ValueTask.CompletedTask;
 };
 
-// OnClientError: 수신 중 예외가 발생했을 때 호출됩니다(패킷 손상, 연결 재설정 등).
+// OnClientError: 패킷 파싱 실패(SpanReader 경계 초과) 또는 OnReceived 핸들러 예외 시 호출됩니다.
+// ※ SocketException(연결 재설정 등)은 FillPipeAsync에서 조용히 처리되어 이 콜백에 도달하지 않습니다.
+//    그 경우 소켓이 닫히면서 OnClientDisconnected가 호출됩니다.
 listener.OnClientError = (ISession session, Exception ex) =>
 {
     Console.WriteLine($"[오류] {session.RemoteEndPoint}: {ex.GetType().Name} — {ex.Message}");
@@ -95,19 +98,26 @@ listener.OnReceived = (ISession session, ReadOnlyMemory<byte> data) =>
     //   ① ArrayPool<byte>.Shared.Rent(): 직렬화 버퍼를 TLS 슬롯 → 공유 풀 순서로 탐색해 대여
     //      → new byte[] 없이 재사용 버퍼 획득(무할당)
     //   ② BinaryPacketSerializer.Serialize(): 대여 버퍼에 헤더(4B) + 본문 기록 (Zero-allocation)
-    //   ③ ISession.SendAsync(ReadOnlyMemory<byte>): 내부 PipeWriter에 바이트 기록 후 FlushAsync
-    //      → Non-blocking: 쓰기가 동기 완료되면 즉시 반환, 백프레셔 발생 시만 비동기 대기
+    //   ③ ISession.SendAsync(ReadOnlyMemory<byte>): _socket.SendAsync()로 TCP 커널 송신 버퍼에 직접 기록.
+    //      → Non-blocking: 커널 버퍼 여유 시 즉시 반환, 버퍼 포화 시만 비동기 대기(TCP 흐름 제어).
+    //      (수신 경로는 PipeReader를 사용하지만 송신 경로는 소켓 직접 호출입니다)
     //   ④ 동기 완료 시 버퍼 즉시 반납(무할당), 비동기 완료 시 상태머신 1개 할당 후 완료 시 반납
-    return session.SendAsync(new EchoPacket { Message = received.Message });
+    return session.SendAsync(received);
 };
 
 // ── 4. 서버 시작 ──────────────────────────────────────────────────────────────
 //
-// listener.Start(port):
+// listener.Start(port, bindAddress):
 //   - 지정 포트에 소켓을 바인딩하고 listen(backlog)을 호출합니다.
 //   - TCP accept 루프를 백그라운드 Task로 시작합니다 (Non-blocking: 이 줄 이후 즉시 다음 코드 실행).
 //   - 이 줄 이전에 모든 콜백·옵션 설정이 완료되어야 합니다.
-listener.Start(9000);
+// IPAddress.Loopback: 루프백(127.0.0.1) 전용 바인딩 → 외부 네트워크에 노출되지 않습니다.
+//   Start(9000) 단일 인수 오버로드는 IPAddress.Any(전체 인터페이스)에 바인딩하므로
+//   원격 서버에서 실행 시 인증 없는 서비스가 외부에 노출될 수 있습니다.
+//   실제 배포 시에는 바인딩 주소를 명시적으로 지정하세요.
+// MaxConnections·IdleTimeout 미설정 시: 연결 수 무제한·유휴 스윕 비활성화(DoS 취약).
+//   실제 서비스라면 listener.MaxConnections = 100; listener.IdleTimeout = TimeSpan.FromSeconds(30);
+listener.Start(9000, IPAddress.Loopback);
 Console.WriteLine("에코 서버 시작 — 포트 9000  [종료: 아무 키나 누르세요]");
 Console.WriteLine("───────────────────────────────────────");
 
@@ -118,7 +128,8 @@ Console.WriteLine();
 // ── 5. 서버 종료 ──────────────────────────────────────────────────────────────
 //
 // listener.Stop():
-//   - 새 연결 수락을 중단합니다.
-//   - 활성 세션을 순차 정리하고 accept 루프 Task 완료를 기다립니다(동기 블로킹).
+//   - 새 연결 수락을 중단합니다(_cts.Cancel() + 리슨 소켓 Dispose).
+//   - 활성 세션을 DisposeAsync().GetResult()로 순차 정리합니다(동기 블로킹).
+//   - AcceptLoopAsync Task는 취소 후 스스로 종료되나, Stop() 반환 시점에 완료가 보장되지는 않습니다.
 listener.Stop();
 Console.WriteLine("서버 종료.");

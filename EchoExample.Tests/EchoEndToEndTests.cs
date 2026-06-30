@@ -115,7 +115,8 @@ public class EchoEndToEndTests
             var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // await using: IClientConnection은 IAsyncDisposable. 블록 종료 시 DisposeAsync() 자동 호출
-            //   → 소켓 셧다운 + 수신 파이프라인 Task 완료 대기 → 자원 정리 보장.
+            //   → CTS 취소 + 소켓 폐기로 수신 루프 종료 신호.
+            //   FillPipeAsync/ReadPipeAsync Task를 명시적으로 await하지 않으므로 반환 시점에 완료 보장은 없습니다.
             await using IClientConnection client = ServerNet.CreateClient();
 
             // OnReceived: IO 스레드에서 호출. data는 콜백 동안만 유효 → 동기 Deserialize 후 즉시 반환.
@@ -128,17 +129,17 @@ public class EchoEndToEndTests
 
             // ConnectAsync: TCP 3-way handshake + 수신 파이프라인 시작. 완료 후 IsConnected == true.
             await client.ConnectAsync("127.0.0.1", port);
-            // SendAsync<EchoPacket>: ArrayPool 대여 → 직렬화 → Pipe 기록 → 반납.
+            // SendAsync<EchoPacket>: ArrayPool 대여 → 직렬화 → _socket.SendAsync(소켓 직접 기록) → 반납.
             await client.SendAsync(new EchoPacket { Message = TestMessage });
 
-            // Task.WhenAny: 에코 도착(tcs.Task) 또는 타임아웃(Delay) 중 먼저 완료되는 쪽으로 제어 반환.
-            var winner = await Task.WhenAny(tcs.Task, Task.Delay(EchoTimeoutMs));
-            Assert.True(winner == tcs.Task, $"에코 응답이 {EchoTimeoutMs}ms 내 도착하지 않았습니다.");
-            Assert.Equal(TestMessage, await tcs.Task);
+            // WaitAsync: .NET 6+ 내장 타임아웃 — 완료 즉시 내부 타이머 취소(Task.Delay 잔류 없음).
+            // 타임아웃 시 TimeoutException throw.
+            string echoed = await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(EchoTimeoutMs));
+            Assert.Equal(TestMessage, echoed);
         }
         finally
         {
-            // listener.Stop(): 새 연결 수락 중단 + 활성 세션 정리 + accept 루프 Task 완료 대기.
+            // listener.Stop(): CTS 취소 + 활성 세션 순차 정리(동기). AcceptLoopAsync는 취소 후 스스로 종료.
             listener.Stop();
         }
     }
@@ -177,9 +178,9 @@ public class EchoEndToEndTests
             await client.ConnectAsync("127.0.0.1", port);
             await client.SendAsync(new EchoPacket { Message = message });
 
-            var winner = await Task.WhenAny(tcs.Task, Task.Delay(EchoTimeoutMs));
-            Assert.True(winner == tcs.Task, $"에코 응답이 {EchoTimeoutMs}ms 내 도착하지 않았습니다.");
-            Assert.Equal(message, await tcs.Task);
+            // WaitAsync: 완료 즉시 타이머 취소. 타임아웃 시 TimeoutException.
+            string echoed = await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(EchoTimeoutMs));
+            Assert.Equal(message, echoed);
         }
         finally
         {
@@ -243,10 +244,8 @@ public class EchoEndToEndTests
             foreach (string msg in sentMessages)
                 await client.SendAsync(new EchoPacket { Message = msg });
 
-            var winner = await Task.WhenAny(tcs.Task, Task.Delay(EchoTimeoutMs));
-            Assert.True(winner == tcs.Task,
-                $"{expectedCount}개 에코 응답이 {EchoTimeoutMs}ms 내 도착하지 않았습니다. " +
-                $"실제 도착: {received.Count}개");
+            // WaitAsync: 완료 즉시 타이머 취소. 타임아웃 시 TimeoutException(잔류 타이머 없음).
+            await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(EchoTimeoutMs));
 
             // 전송 순서 == 에코 수신 순서
             Assert.Equal(sentMessages, received.ToArray());

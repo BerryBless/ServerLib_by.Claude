@@ -99,8 +99,9 @@ while (true)
     // client.SendAsync<EchoPacket>(packet): PacketSendExtensions 확장 메서드.
     //   ① ArrayPool<byte>.Shared.Rent(): TLS 슬롯 → 공유 풀 순서로 버퍼 탐색·대여 (무할당)
     //   ② BinaryPacketSerializer.Serialize(): 대여 버퍼에 헤더(4B) + 본문 기록 (Zero-allocation)
-    //   ③ IClientConnection.SendAsync(ReadOnlyMemory<byte>): 내부 PipeWriter에 기록 + FlushAsync
-    //      → Non-blocking: 동기 완료 시 즉시 반환, 백프레셔 발생 시만 비동기 대기
+    //   ③ IClientConnection.SendAsync(ReadOnlyMemory<byte>): _socket.SendAsync()로 TCP 커널 송신 버퍼에 직접 기록.
+    //      → Non-blocking: 커널 버퍼 여유 시 즉시 반환, 버퍼 포화 시만 비동기 대기(TCP 흐름 제어).
+    //      (수신 경로는 PipeReader를 사용하지만 송신 경로는 소켓 직접 호출입니다)
     //   ④ 동기 완료 시 버퍼 즉시 반납(무할당), 비동기 완료 시 상태머신 1개 할당 후 완료 시 반납
     await client.SendAsync(new EchoPacket { Message = line });
 }
@@ -108,5 +109,7 @@ while (true)
 // ── 5. 연결 종료 ──────────────────────────────────────────────────────────────
 //
 // await using 블록 종료 시 client.DisposeAsync()가 자동 호출됩니다.
-//   → 소켓 셧다운 + 수신 파이프라인 Task 완료 대기 → 자원 반환.
+//   → CTS 취소(_cts.CancelAsync()) + 소켓 폐기(_socket.Dispose()) → 수신 루프 종료 신호.
+//   FillPipeAsync/ReadPipeAsync Task의 완료를 명시적으로 await하지 않습니다.
+//   소켓 폐기 직후 루프가 신속히 종료되지만, DisposeAsync 반환 시점에 완료 보장은 없습니다.
 Console.WriteLine("클라이언트 종료.");
