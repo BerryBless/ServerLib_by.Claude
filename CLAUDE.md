@@ -11,6 +11,8 @@
 - `Client/Program.cs` — 다중 공격자 예제: 스레드별 고정 딜(10·15·20·25·30 사이클) `DamagePacket` 반복 송신(1회 직렬화 후 버퍼 재사용 무할당 패턴), `conn.OnReceived`로 HP 바(T0만 출력)·처치 알림 수신, `[CLIENTSTATS]` 측정 신호 유지; `EnableAuthGating` 토글로 T0가 AuthServer(9200)→토큰→게임서버 `AuthTokenPacket` 제시 데모; `EnableTicketing` 토글로 티켓팅 데모 전환 — 7클라 동시 **배치 좌석지정** 예약(로그인→좌석맵조회→**K석 배치** 지정(`SeatsPerClient` 기본 2)→예약·SeatTaken 시 재선택 최대5회·`RateLimited`(Id=8) 수신 시 즉시 중단, `FailingClientIndex`=0이 결제 실패 후 K석 배치 재조회·재예약·재결제 시연), `Channel<byte[]>` inbox로 `OnReceived` 콜백 비동기 처리, 최종 `ConfirmedSeats ≤ min(ClientCount, floor(TotalSeats/SeatsPerClient))*SeatsPerClient` 상한 출력
 - `AuthServer/Program.cs` — 독립 인증 서버 예제(port 9200): `ServerNet.CreateListener()`(registry 생략) + `LoginService` 전담 → `LoginRequestPacket`(Id=10)만 처리, Redis 토큰 발급
 - `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
+- `EchoServer/Program.cs` — **학습용 에코 서버 예제**(포트 9000): `ServerNet.CreateListener()` → `OnReceived`에서 `EchoPacket`(Id=1) 역직렬화 → 동일 메시지 재전송. 모든 ServerLib 사용 지점에 XML 문서 + 네트워크/메모리 내부동작 인라인 주석 전적용. 종료: 아무 키.
+- `EchoClient/Program.cs` — **학습용 에코 클라이언트 예제**(인터랙티브 콘솔): `ServerNet.CreateClient()` → `ConnectAsync("127.0.0.1", 9000)` → 콘솔 입력을 `EchoPacket`으로 전송, 에코 응답 출력. `await using` 패턴으로 `IAsyncDisposable` 정리. 종료: `exit`.
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
