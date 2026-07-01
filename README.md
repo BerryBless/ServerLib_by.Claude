@@ -25,18 +25,17 @@ ServerLib이 노출하는 공개 계약 전체입니다. 모든 인터페이스�
 
 ```
 ClaudeCodeStudy.sln
-├── ServerLib/
-│   ├── Interface/        # 순수 추상화 — 아래 7개 인터페이스
+├── ServerLib/            # 코어 라이브러리 (NuGet 배포 단위)
+│   ├── Interface/        # 순수 추상화 — 6개 인터페이스 + SessionState enum
 │   ├── ServerNet.cs      # 공개 팩토리 — CreateListener/CreateClient/CreateSessionRegistry
 │   └── Core/             # 구현 (의존성: Core → Interface)
 │       ├── Transport/    # SocketPipelineListener / ~Client / ~Session  (internal)
 │       ├── Serialization/# BinaryPacketSerializer, SpanReader/Writer, IPacket  (public)
-│       ├── Rpc/          # RpcDispatcher
+│       ├── Rpc/          # RpcDispatcher (배열 인덱싱 O(1) 라우팅)
 │       └── Memory/       # PacketPool (ArrayPool 래퍼)
-├── Server/               # ServerNet.CreateListener() 사용 예제 (Program.cs)
-├── Client/               # ServerNet.CreateClient() 사용 예제 (다중 스레드 부하)
-├── AppConfig/            # ServerConfig / ClientConfig (JSON 설정 모델)
-└── Rpc.Generator/        # [RpcService] → 디스패처 Source Generator
+├── EchoServer/           # IServerListener 학습 예제 (포트 9000 에코 서버)
+├── EchoClient/           # IClientConnection 학습 예제 (인터랙티브 콘솔)
+└── EchoExample.Tests/    # 에코 예제 통합 테스트
 ```
 
 | 인터페이스 | 구현체 (`ServerLib.Core`) |
@@ -106,7 +105,7 @@ await conn.SendAsync(myBytes);
 ```
 
 > **공개 표면 요약** — public: `ServerNet`(팩토리) · `ServerLib.Interface`의 전체 인터페이스 · 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`) · `ServerMetrics` · `SessionContextExtensions`. internal: `SocketPipelineListener`/`~Client`/`~Session` · `SessionRegistry`.
-> 동작하는 전체 예제는 `Server/Program.cs`·`Client/Program.cs`를 참고.
+> 동작하는 전체 예제는 `EchoServer/Program.cs`·`EchoClient/Program.cs`를 참고.
 
 ---
 
@@ -147,7 +146,7 @@ await conn.SendAsync(myBytes);
 ---
 
 ### `IRpcHandler` — RPC 디스패처
-수신된 패킷 페이로드를 패킷 ID 기준으로 적절한 RPC 핸들러로 라우팅합니다. `Rpc.Generator`의 Source Generator가 `[RpcService]` 인터페이스를 분석하여 구현체를 자동 생성합니다.
+수신된 패킷 페이로드를 패킷 ID 기준으로 적절한 핸들러로 라우팅합니다. `Register(packetId, handler)`로 핸들러를 등록하면 수신 패킷 앞 2바이트(PacketId)로 O(1) 배열 인덱싱 디스패치를 수행합니다.
 
 | 멤버 | 설명 | 주요 제약 |
 |------|------|----------|
@@ -257,7 +256,7 @@ await conn.SendAsync(myBytes);
 ```
 
 - 에이전트 정의: `.claude/agents/*.md` — **총 21개**
-- 스킬 정의: `.claude/skills/*/SKILL.md` — 오케스트레이터 5개 + 개별 스킬 12개 + `harness` 메타스킬
+- 스킬 정의: `.claude/skills/*/SKILL.md` — 오케스트레이터 5개 + 개별 스킬 17개 + `commitandpush`(Git 파이프라인) + `harness-evolve`(유틸) = **총 24개**
 
 ### 3.1 에이전트 카탈로그 (21개)
 
