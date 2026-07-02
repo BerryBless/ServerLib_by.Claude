@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>EchoWeb — 브라우저 에코 데모</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; background: #0f1115; color: #e6e6e6; }
+  h1 { font-size: 1.4rem; }
+  #status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.85rem; margin-left: 8px; }
+  #status.connected { background: #1f8b4c; }
+  #status.disconnected { background: #8b1f1f; }
+  #status.connecting { background: #8b7a1f; }
+  #log { height: 320px; overflow-y: auto; background: #1a1d24; border: 1px solid #2c2f38; border-radius: 8px; padding: 12px; margin: 16px 0; }
+  #log p { margin: 4px 0; word-break: break-word; }
+  .sent { color: #7cb8ff; }
+  .recv { color: #7cffb0; }
+  .sys  { color: #b0b0b0; font-style: italic; }
+  form { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #2c2f38; background: #1a1d24; color: #e6e6e6; }
+  button { padding: 10px 18px; border-radius: 6px; border: none; background: #3a6df0; color: white; cursor: pointer; }
+  button:disabled { background: #444; cursor: not-allowed; }
+</style>
+</head>
+<body>
+  <h1>EchoWeb 에코 데모<span id="status" class="connecting">연결 중...</span></h1>
+  <p>메시지를 입력하면 <code>WebSocket → EchoWeb → EchoServer(9000, TCP)</code> 경로를 왕복해 그대로 돌아옵니다.</p>
+
+  <div id="log"></div>
+
+  <form id="form">
+    <input id="input" type="text" placeholder="메시지 입력..." autocomplete="off" disabled />
+    <button id="send" type="submit" disabled>전송</button>
+  </form>
+
+<script>
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+
+  // 수신 텍스트는 반드시 textContent로만 렌더링합니다.
+  // innerHTML을 쓰면 서버(혹은 다른 사용자)가 보낸 문자열이 HTML/스크립트로 해석되어
+  // XSS(교차 사이트 스크립팅)로 이어질 수 있습니다 — 과거 티켓팅 대시보드에서 지적된 패턴을 재발 방지.
+  function appendLine(text, cls) {
+    const p = document.createElement('p');
+    p.className = cls;
+    p.textContent = text;
+    logEl.appendChild(p);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setStatus(state, text) {
+    statusEl.className = state;
+    statusEl.textContent = text;
+    const connected = state === 'connected';
+    input.disabled = !connected;
+    sendBtn.disabled = !connected;
+  }
+
+  // 브라우저 WebSocket API: location.host를 그대로 사용해 EchoWeb가 리슨 중인 host:port(127.0.0.1:8080)에 접속.
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+
+  ws.onopen = () => {
+    setStatus('connected', '연결됨');
+    appendLine('[시스템] 서버에 연결되었습니다.', 'sys');
+  };
+
+  ws.onmessage = (ev) => {
+    appendLine(`← ${ev.data}`, 'recv');
+  };
+
+  ws.onclose = () => {
+    setStatus('disconnected', '연결 끊김');
+    appendLine('[시스템] 연결이 종료되었습니다.', 'sys');
+  };
+
+  ws.onerror = () => {
+    setStatus('disconnected', '오류');
+  };
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(text);
+    appendLine(`→ ${text}`, 'sent');
+    input.value = '';
+  });
+</script>
+</body>
+</html>

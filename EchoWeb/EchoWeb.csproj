@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>EchoWeb</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- ServerLib를 소스 참조: 동일 솔루션 내 라이브러리를 DLL이 아닌 소스로 빌드하여 IntelliSense·디버깅 지원 -->
+    <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
+  </ItemGroup>
+</Project>

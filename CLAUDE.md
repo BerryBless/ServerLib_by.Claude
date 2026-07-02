@@ -13,6 +13,7 @@
 - `ServerLib.Examples/` — **전 public API 자체완결 예제 모음**: 11개 예제(`01_EchoBasics`~`11_Packets`)가 127.0.0.1 루프백으로 서버+클라를 한 프로세스에서 구동. `dotnet run -- all`로 전체 스모크 테스트 가능. 모든 코드에 프로젝트 주석 규칙 전적용(XML 문서 + 네트워크/메모리 선언부 내부동작 인라인 주석)
 - `EchoServer/Program.cs` — **학습용 에코 서버 예제**(포트 9000): `ServerNet.CreateListener()` → `OnReceived`에서 `EchoPacket`(Id=1) 역직렬화 → 동일 메시지 재전송. 모든 ServerLib 사용 지점에 XML 문서 + 네트워크/메모리 내부동작 인라인 주석 전적용. 종료: 아무 키.
 - `EchoClient/Program.cs` — **학습용 에코 클라이언트 예제**(인터랙티브 콘솔): `ServerNet.CreateClient()` → `ConnectAsync("127.0.0.1", 9000)` → 콘솔 입력을 `EchoPacket`으로 전송, 에코 응답 출력. `await using` 패턴으로 `IAsyncDisposable` 정리. 종료: `exit`.
+- `EchoWeb/Program.cs` — **브라우저용 웹 에코 데모**(ASP.NET Core, `http://127.0.0.1:8080`): 브라우저가 raw TCP를 직접 말할 수 없으므로 `/ws` WebSocket ↔ 기존 `EchoServer.exe`(9000) TCP 간 프로토콜 변환 브리지만 담당(에코 로직은 재사용, 별도 프로세스 구성). WebSocket 연결 1개 = `ServerNet.CreateClient()` 세션 1개(per-session 격리); `Channel<string>` 단일 소비자 펌프로 `WebSocket.SendAsync` 동시호출 금지 제약 충족; 단일 `CancellationTokenSource`로 브라우저 종료·9000 드롭 두 실패원을 수렴시켜 Cancel→채널종료→펌프대기→WS close→`echo` dispose 순서 고정; `wwwroot/index.html`은 `textContent` 렌더로 XSS 방지. 설계 문서: `plan/echoweb_0702.md`.
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
@@ -84,6 +85,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/ticketing_multiseat_0624.md` | 2026-06-24 | 배치 멀티 좌석 티켓팅 (TicketContext.Slots[]·TryReserveBatch·ConfirmAll·ReleaseAll All-or-nothing, 배치 와이어 포맷, MaxSeatsPerSession 설정, 172 테스트) |
 | `plan/dbperf_test_0627.md` | 2026-06-27 | DB 포함 성능 테스트 하네스 (closed-loop login·token-resolve, [DBSTATS] 순수 DB 지연 분리, docker-compose) |
 | `plan/test_review_0628.md` | 2026-06-28 | ServerLib.Tests 종합 코드 리뷰 (품질 감사+커버리지 갭, QUALITY-I 4건 수정·GAP-C/I 22건 신규 추가, 210 테스트) |
+| `plan/echoweb_0702.md` | 2026-07-02 | 웹 기반 에코 데모 서버 (EchoWeb: WebSocket↔EchoClient(TCP) 브리지, 별도 프로세스 구성, Channel 단일소비자 펌프, linkCts 통합 teardown) |
 
 ---
 
