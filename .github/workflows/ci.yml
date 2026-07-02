@@ -20,10 +20,10 @@ jobs:
           dotnet-version: '10.0.301'
 
       - name: Restore dependencies
-        run: dotnet restore ServerLib.Tests/ServerLib.Tests.csproj
+        run: dotnet restore ClaudeCodeStudy.sln
 
       - name: Build
-        run: dotnet build ServerLib.Tests/ServerLib.Tests.csproj --configuration Release --no-restore
+        run: dotnet build ClaudeCodeStudy.sln --configuration Release --no-restore
 
       - name: Run unit tests
-        run: dotnet test ServerLib.Tests/ServerLib.Tests.csproj --configuration Release --no-build --verbosity normal
+        run: dotnet test ClaudeCodeStudy.sln --configuration Release --no-build --verbosity normal
