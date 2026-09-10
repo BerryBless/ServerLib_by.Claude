@@ -6,3 +6,13 @@ riderModule.iml
 /_ReSharper.Caches/
 .idea/
 _work*/
+
+# cross-verify 교차 검증 감사 기록은 저장소에 포함 (재현·감사 추적용).
+# _work*/가 _workspace/를 제외하므로 부모 경로를 재포함한 뒤 cross만 되살리고,
+# 용량 큰 Codex 진행 로그(.err/.log)와 그 외 _workspace 산출물은 계속 제외한다.
+!_workspace/
+_workspace/*
+!_workspace/cross/
+!_workspace/cross/**
+_workspace/cross/**/*.err
+_workspace/cross/**/*.log
