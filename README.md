@@ -33,10 +33,10 @@ ClaudeCodeStudy.sln
 │       ├── Serialization/# BinaryPacketSerializer, SpanReader/Writer, IPacket  (public)
 │       ├── Rpc/          # RpcDispatcher (배열 인덱싱 O(1) 라우팅)
 │       └── Memory/       # PacketPool (ArrayPool 래퍼)
-├── EchoServer/           # IServerListener 학습 예제 (포트 9000 에코 서버)
-├── EchoClient/           # IClientConnection 학습 예제 (인터랙티브 콘솔)
-└── EchoExample.Tests/    # 에코 예제 통합 테스트
+└── EchoExample.Tests/    # ServerLib 통합 테스트 겸 사용 예제 (루프백 실소켓 에코 검증)
 ```
+
+> **정리(2026-09-11):** 라이브러리 핵심만 남기고 데모 앱(Echo/Counter 서버·클라이언트, EchoWeb, AuthServer, Mob·티켓팅 호스트 등)을 제거했다. 사용 예제는 `EchoExample.Tests`가 실소켓 통합 테스트로 겸한다.
 
 | 인터페이스 | 구현체 (`ServerLib.Core`) |
 |-----------|--------------------------|
@@ -105,7 +105,7 @@ await conn.SendAsync(myBytes);
 ```
 
 > **공개 표면 요약** — public: `ServerNet`(팩토리) · `ServerLib.Interface`의 전체 인터페이스 · 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`) · `ServerMetrics` · `SessionContextExtensions`. internal: `SocketPipelineListener`/`~Client`/`~Session` · `SessionRegistry`.
-> 동작하는 전체 예제는 `EchoServer/Program.cs`·`EchoClient/Program.cs`를 참고.
+> 동작하는 전체 사용 예제는 `EchoExample.Tests/EchoEndToEndTests.cs`(루프백 실소켓으로 리스너·클라이언트를 함께 구동)를 참고.
 
 ---
 
