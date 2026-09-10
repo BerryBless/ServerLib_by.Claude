@@ -15,6 +15,10 @@ internal sealed class SocketPipelineClient : IClientConnection
     // PipeOptions(useSynchronizationContext:false): 클라이언트는 특히 위험하다 — ConnectAsync를 UI 스레드에서 await하면
     // 기본값(true)에서 FillPipe/ReadPipe의 모든 continuation이 그 UI 스레드에 고정되어 데드락한다(ConfigureAwait로는 못 막음).
     // continuation을 ThreadPool에서 실행하도록 강제. 전 연결 공유라 static readonly 1회 생성.
+    //
+    // pauseWriterThreshold 기본값(64KB)이 최대 프레임(65,539B)보다 작지만 데드락은 없다: .NET Core 3.0+의 Pipe는
+    // reader가 AdvanceTo(examined=End)로 "버퍼 전부를 검토했음"을 알리면 임계값과 무관하게 writer를 재개한다
+    // (backpressure는 reader가 실제로 뒤처진 경우에만 적용) — 서버 세션과 동일 근거, 테스트로 실증됨.
     private static readonly PipeOptions s_pipeOptions = new(useSynchronizationContext: false);
 
     private Socket? _socket;
@@ -262,11 +266,14 @@ internal sealed class SocketPipelineClient : IClientConnection
         await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // 게이트 대기 중 DisposeAsync가 완료되었을 수 있다 — 해제된 소켓 접근 전에 재확인해 즉시 탈출.
+            // (_sendGate는 Dispose하지 않으므로 대기자는 반드시 여기까지 깨어난다 — DisposeAsync 주석 참조)
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) == 1, this);
             var timeout = SendTimeout;
             if (timeout is null)
             {
                 // 시한 미설정: CTS 없이 caller 토큰 직접 사용(무할당).
-                await _socket.SendAsync(data, SocketFlags.None, cancellationToken).ConfigureAwait(false);
+                await SendAllAsync(_socket, data, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -282,7 +289,8 @@ internal sealed class SocketPipelineClient : IClientConnection
                 try
                 {
                     // A-max: in-flight 소켓 쓰기는 cts(시한)만 관찰. caller 취소는 위 _sendGate.WaitAsync에서 존중.
-                    await _socket.SendAsync(data, SocketFlags.None, cts.Token).ConfigureAwait(false);
+                    // 시한은 위 CancelAfter 1회로 무장되어 부분 송신 루프 전체(전량 송신 완료까지)에 적용된다.
+                    await SendAllAsync(_socket, data, cts.Token).ConfigureAwait(false);
                 }
                 // cts.Token만 넘기므로 OCE=시한 만료 → SocketException(TimedOut)으로 변환 → PING 루프 등 호출부와 일관.
                 catch (OperationCanceledException)
@@ -292,6 +300,15 @@ internal sealed class SocketPipelineClient : IClientConnection
             }
         }
         finally { _sendGate.Release(); }
+    }
+
+    // Socket.SendAsync(스트림 소켓)는 send(2) 시맨틱을 따른다: 커널 송신 버퍼 여유만큼만 큐잉하고 "실제 수용한
+    // 바이트 수"를 반환한 뒤 정상 완료할 수 있다. 반환값을 무시하면 버퍼 포화 시 패킷 꼬리가 유실되어 이후 스트림의
+    // 프레이밍 전체가 오염되므로, 반환 길이만큼 슬라이스를 전진시키며 전량 송신될 때까지 반복한다(추가 할당 없음).
+    private static async ValueTask SendAllAsync(Socket socket, ReadOnlyMemory<byte> data, CancellationToken token)
+    {
+        for (int sent = 0; sent < data.Length;)
+            sent += await socket.SendAsync(data.Slice(sent), SocketFlags.None, token).ConfigureAwait(false);
     }
 
     public void Disconnect()
@@ -307,9 +324,21 @@ internal sealed class SocketPipelineClient : IClientConnection
 
         // ConfigureAwait(false): 호출자가 SyncContext 있는 스레드에서 DisposeAsync를 동기 대기할 경우의 데드락 회피.
         if (_cts != null) await _cts.CancelAsync().ConfigureAwait(false);
-        _socket?.Dispose();
+        _socket?.Dispose(); // in-flight 송수신을 SocketException으로 즉시 중단 → 게이트 보유자가 finally(Release)로 빠져나온다
         _cts?.Dispose();
-        _sendGate.Dispose();
-        _sendTimeoutCts?.Dispose(); // 재사용 송신 시한 CTS 해제(진행 중 송신과의 경합은 _sendGate.Dispose와 동일 저위험 race)
+
+        // _sendGate는 의도적으로 Dispose하지 않는다: SemaphoreSlim.Dispose는 대기 중인 WaitAsync Task를 깨우지 않아
+        // 대기자가 영구 미완료(hang)로 남는다. AvailableWaitHandle을 만들지 않는 SemaphoreSlim은 커널 핸들 등
+        // unmanaged 리소스를 보유하지 않으므로 Dispose 생략이 안전하며(파이널라이저 없음, GC로 회수),
+        // 남은 대기자는 게이트 통과 후 SendAsync의 disposed 재확인에서 ObjectDisposedException으로 탈출한다.
+        //
+        // _sendTimeoutCts는 게이트를 확보해 in-flight 송신의 finally(CancelAfter 해제)까지 끝났음을 관찰한 뒤에만
+        // Dispose한다 — 실행 중 송신과 경합하며 Dispose하면 송신 스레드의 CancelAfter가 ObjectDisposedException을 던진다.
+        // 확보 실패(비정상 장기 송신)는 CTS 해제를 GC에 위임한다: hang보다 지연 회수가 낫다.
+        if (await _sendGate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            try { _sendTimeoutCts?.Dispose(); }
+            finally { _sendGate.Release(); } // 통행 재개 — 남은 대기자들이 순서대로 깨어나 disposed 확인 후 탈출
+        }
     }
 }

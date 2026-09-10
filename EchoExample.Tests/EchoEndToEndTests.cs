@@ -255,4 +255,54 @@ public class EchoEndToEndTests
             listener.Stop();
         }
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // 테스트 4 — 최대 크기 프레임 에코 (Pipe pause 임계값 데드락 회귀 테스트)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 와이어 포맷이 허용하는 최대 크기 프레임(헤더 4B + 본문 65,535B = 65,539B)이
+    /// 데드락 없이 왕복 에코되는지 검증합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[배경]</b> 2026-09-10 Codex 리뷰가 "최대 프레임(65,539B) &gt; 기본 pauseWriterThreshold(65,536B) → writer 정지
+    /// ↔ reader 완성 프레임 대기 상호 데드락"을 P1으로 보고했으나, 실측 결과 오탐이었습니다. .NET Core 3.0+의
+    /// <c>Pipe</c>는 reader가 <c>AdvanceTo(examined=End)</c>로 버퍼 전부를 검토했다고 알리면 임계값과 무관하게
+    /// writer를 재개하기 때문입니다(backpressure는 reader가 실제로 뒤처진 경우에만 적용).
+    /// 이 테스트는 그 런타임 보증이 유지되는지(런타임 업그레이드·PipeOptions 변경 회귀 포함) 상시 검증합니다.
+    /// 데드락 재발 시 hang 대신 <see cref="EchoTimeoutMs"/> 경과 후 TimeoutException으로 명확히 실패합니다.
+    /// 64KB급 송신은 커널 송신 버퍼 상황에 따라 분할 수용될 수 있으므로 부분 송신 루프(SendAllAsync)도 함께 실증됩니다.
+    /// </remarks>
+    [Fact]
+    public async Task Server_EchoesMaxSizeFrameWithoutDeadlock()
+    {
+        // 본문 = 길이 프리픽스(2B) + UTF-8 바이트. ASCII는 1B/char이므로 65,533자 → 본문 정확히 65,535B(최대).
+        string message = new string('a', ushort.MaxValue - 2);
+        int port = GetFreePort();
+        IServerListener listener = StartEchoListener(port);
+
+        try
+        {
+            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            await using IClientConnection client = ServerNet.CreateClient();
+            client.OnReceived = (ReadOnlyMemory<byte> data) =>
+            {
+                tcs.TrySetResult(Serializer.Deserialize<EchoPacket>(data.Span).Message);
+                return ValueTask.CompletedTask;
+            };
+
+            await client.ConnectAsync("127.0.0.1", port);
+            await client.SendAsync(new EchoPacket { Message = message });
+
+            // WaitAsync: 데드락 재발 시 여기서 TimeoutException — hang 대신 명확한 실패로 표면화.
+            string echoed = await tcs.Task.WaitAsync(TimeSpan.FromMilliseconds(EchoTimeoutMs));
+            Assert.Equal(message.Length, echoed.Length);
+            Assert.Equal(message, echoed);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
 }
