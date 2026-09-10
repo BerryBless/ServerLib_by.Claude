@@ -45,6 +45,15 @@ function Write-Meta([string]$status, [int]$exitCode) {
     } | ConvertTo-Json | Set-Content -Path $metaFile -Encoding utf8
 }
 
+# 사용량/토큰 한도 실패 판별 — err 파일 전체를 검사한다. 예외·비정상종료·빈출력 등 모든 실패 경로에서
+# 동일 기준으로 분류해, 오케스트레이터가 Claude 단독 폴백을 일관되게 판단하도록 한다.
+# 'token' 단독 매칭은 인증 토큰 오류와 혼동되므로 제외하고 한도 관련 표현만 매칭한다.
+function Test-QuotaError {
+    if (-not (Test-Path $errFile)) { return $false }
+    $t = Get-Content $errFile -Raw
+    return [bool]($t -match "(?i)rate[ _-]?limit|usage[ _-]?limit|hit your (usage|limit)|too many requests|quota|\b429\b|insufficient[ _-]?(credits|quota)|usage cap|limit reached|purchase more credits")
+}
+
 if (-not (Test-Path $PromptFile)) { Write-Meta 'error' -1; Write-Error "프롬프트 파일 없음: $PromptFile"; exit 1 }
 
 # codex.cmd: npm 전역 셰이 — CreateProcess가 .cmd를 %COMSPEC% 경유로 실행하므로 리다이렉트와 함께 직접 기동 가능
@@ -77,20 +86,19 @@ try {
         exit 1
     }
 
+    $isQuota = Test-QuotaError   # 한도 실패는 exit code가 정상이든 아니든 err 텍스트로 판별
+
     if ($proc.ExitCode -ne 0) {
-        $errText = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : ''
-        # 사용량/토큰 한도 실패를 'quota'로 별도 분류 — 오케스트레이터의 Claude 단독 폴백 판단 근거.
-        # 'token' 단독 매칭은 인증 토큰 오류와 혼동되므로 제외하고, 한도 관련 표현만 매칭한다.
-        $isQuota = $errText -match '(?i)rate[ _-]?limit|usage[ _-]?limit|too many requests|quota|\b429\b|insufficient[ _-]?(credits|quota)|usage cap|limit reached'
         Write-Meta ($isQuota ? 'quota' : 'error') $proc.ExitCode
-        $errTail = ($errText.Length -gt 0) ? (($errText -split "`n" | Select-Object -Last 5) -join ' | ') : ''
-        Write-Error "Codex 호출 실패 ($(($isQuota) ? '토큰/사용량 한도' : 'error'), exit $($proc.ExitCode)): $errTail"
+        $errTail = (Test-Path $errFile) ? (((Get-Content $errFile -Raw) -split "`n" | Select-Object -Last 5) -join ' | ') : ''
+        Write-Error "Codex 호출 실패 ($($isQuota ? '토큰/사용량 한도' : 'error'), exit $($proc.ExitCode)): $errTail"
         exit 1
     }
 
     if (-not (Test-Path $OutFile) -or (Get-Item $OutFile).Length -eq 0) {
-        Write-Meta 'empty-output' $proc.ExitCode
-        Write-Error "Codex가 응답 파일을 생성하지 않음 — 검증 통과 아님"
+        # exit 0이어도 한도 메시지가 err에 있으면 quota로 분류 (일부 실패는 0으로 종료하고 출력만 비움)
+        Write-Meta ($isQuota ? 'quota' : 'empty-output') $proc.ExitCode
+        Write-Error "Codex가 응답 파일을 생성하지 않음$($isQuota ? ' (토큰/사용량 한도)' : '') — 검증 통과 아님"
         exit 1
     }
 
@@ -99,7 +107,8 @@ try {
     exit 0
 }
 catch {
-    Write-Meta 'error' -1
+    # 예외 경로에서도 한도 여부를 판별해 quota를 놓치지 않는다 (Start-Process/WaitForExit 예외 포함).
+    Write-Meta ((Test-QuotaError) ? 'quota' : 'error') -1
     Write-Error "Codex 호출 예외: $($_.Exception.Message)"
     exit 1
 }
