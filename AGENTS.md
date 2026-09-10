@@ -14,6 +14,8 @@
 - `EchoServer/Program.cs` — **학습용 에코 서버 예제**(포트 9000): `ServerNet.CreateListener()` → `OnReceived`에서 `EchoPacket`(Id=1) 역직렬화 → 동일 메시지 재전송. 모든 ServerLib 사용 지점에 XML 문서 + 네트워크/메모리 내부동작 인라인 주석 전적용. 종료: 아무 키.
 - `EchoClient/Program.cs` — **학습용 에코 클라이언트 예제**(인터랙티브 콘솔): `ServerNet.CreateClient()` → `ConnectAsync("127.0.0.1", 9000)` → 콘솔 입력을 `EchoPacket`으로 전송, 에코 응답 출력. `await using` 패턴으로 `IAsyncDisposable` 정리. 종료: `exit`.
 - `EchoWeb/Program.cs` — **브라우저용 웹 에코 데모**(ASP.NET Core, `http://127.0.0.1:8080`): 브라우저가 raw TCP를 직접 말할 수 없으므로 `/ws` WebSocket ↔ 기존 `EchoServer.exe`(9000) TCP 간 프로토콜 변환 브리지만 담당(에코 로직은 재사용, 별도 프로세스 구성). WebSocket 연결 1개 = `ServerNet.CreateClient()` 세션 1개(per-session 격리); `Channel<string>` 단일 소비자 펌프로 `WebSocket.SendAsync` 동시호출 금지 제약 충족; 단일 `CancellationTokenSource`로 브라우저 종료·9000 드롭 두 실패원을 수렴시켜 Cancel→채널종료→펌프대기→WS close→`echo` dispose 순서 고정; `wwwroot/index.html`은 `textContent` 렌더로 XSS 방지. 설계 문서: `plan/echoweb_0702.md`.
+- `CounterServer/Program.cs` — **경합(contention) 시연용 공유 카운터 서버 예제**(127.0.0.1:9300 루프백 전용): `ServerNet.CreateListener()` → `CounterHandler.HandleAsync`를 `OnReceived`에 직결. 모든 세션이 공유하는 `CounterState`(Interlocked `long` 2개 — `Value`·`AppliedOps`)를 `IncrementPacket`(Id=3) +1 / `DecrementPacket`(Id=4) −1로 갱신하고, `CounterQueryPacket`(Id=18, 0B) 수신 시 `CounterValuePacket`(Id=19, **16B** = `long Value` + `long AppliedOps`)로 회신. `Deserialize<T>`가 타입 ID를 검증하지 않으므로 헤더 id·선언/실제 본문 길이를 핸들러가 직접 교차 검증하고, 위반·미지 ID·조회 응답 송신 실패는 예외로 표면화해 **해당 세션만** 종료(카운터 불변, 자동 재송신 없음 — `SocketException`을 "상대 종료"로 단정하지 않음). 종료 시 출력하는 `Value`는 정지 보장이 없어 **참고용**이며 검증 판정이 아니다. 종료: 아무 키.
+- `CounterClient/Program.cs` — **다중 연결 동시 증감 검증 예제**: `CounterScenario.RunAsync`(Program과 `CounterExample.Tests` E2E가 **공유**하는 실행기) 호출 — 8연결을 공통 시작 신호로 동시 출발 → 연결당 더하기 1,000·빼기 750을 Bresenham 균등 분산 + 연결별 위상 회전으로 뒤섞어 송신(4B 프레임 1회 직렬화 후 재사용 → 송신당 직렬화 무할당) → **연결별 마지막 명령 뒤 조회 = 그 연결의 처리 완료 배리어**(서버 수신 루프가 세션별로 순차 await하므로 성립) → 전 연결 확인 후 **정지 상태**에서 최종 조회 → `Value == 8×(1,000−750) = 2,000` **및** `AppliedOps == 8×1,750 = 14,000` 동시 검증 후 PASS/FAIL·종료 코드(0=PASS, 1=값 불일치, 2=통신 오류·타임아웃). 두 값의 쌍은 비원자이므로 배리어 이후에만 함께 단언한다. 검증은 **새 서버 + 단일 실행** 전제(재검증 시 서버 재시작 안내). 설계 문서: `plan/contention_counter_0910.md`.
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
@@ -87,6 +89,7 @@ plan/<기능명>_<MMDD>.md
 | `plan/dbperf_test_0627.md` | 2026-06-27 | DB 포함 성능 테스트 하네스 (closed-loop login·token-resolve, [DBSTATS] 순수 DB 지연 분리, docker-compose) |
 | `plan/test_review_0628.md` | 2026-06-28 | ServerLib.Tests 종합 코드 리뷰 (품질 감사+커버리지 갭, QUALITY-I 4건 수정·GAP-C/I 22건 신규 추가, 210 테스트) |
 | `plan/echoweb_0702.md` | 2026-07-02 | 웹 기반 에코 데모 서버 (EchoWeb: WebSocket↔EchoClient(TCP) 브리지, 별도 프로세스 구성, Channel 단일소비자 펌프, linkCts 통합 teardown) |
+| `plan/contention_counter_0910.md` | 2026-09-10 | 경합 카운터 서버 (CounterServer 9300 루프백·CounterClient·CounterExample.Tests 신규 3개 + sln 등록, Interlocked `CounterState`(Value·AppliedOps), CounterQueryPacket Id=18(0B)/CounterValuePacket Id=19(16B), 연결별 조회 배리어 후 정지 상태 검증, 26개 신규 테스트) |
 
 ---
 
