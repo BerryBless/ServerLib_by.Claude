@@ -54,10 +54,6 @@ public sealed class CounterHandler
     /// <summary>본문 길이 검증에 실패했을 때 예외 메시지에 쓰이는 접두사입니다.</summary>
     public const string InvalidBodyMessagePrefix = "패킷 본문 길이가 올바르지 않습니다";
 
-    // BinaryPacketSerializer: 내부 가변 상태가 없는 무상태 클래스 → 여러 세션의 IO 스레드가 동시에 호출해도 안전.
-    // static readonly 단일 인스턴스로 공유해 핸들러/패킷마다 직렬화기를 새로 만드는 할당을 제거한다.
-    private static readonly BinaryPacketSerializer Serializer = new();
-
     /// <summary>이 핸들러가 갱신·조회하는 공유 카운터입니다. 모든 세션이 <b>같은 인스턴스</b>를 봅니다.</summary>
     public CounterState State { get; }
 
@@ -79,9 +75,10 @@ public sealed class CounterHandler
     /// 또는 알 수 없는 패킷 ID일 때 발생합니다. 카운터를 <b>건드리기 전에</b> 던지므로 상태는 불변입니다.
     /// </exception>
     /// <remarks>
-    /// <b>[검증을 직접 하는 이유]</b> <c>BinaryPacketSerializer.Deserialize&lt;T&gt;</c>는 헤더를 <b>건너뛰기만</b> 할 뿐
-    /// 타입 ID 일치나 본문 전체 소비를 검사하지 않습니다. 따라서 <c>Deserialize</c>에 넘기기 전에
-    /// ID와 길이를 직접 확인해야 "Id=3 자리에 다른 길이의 본문"같은 프레임이 조용히 통과하는 것을 막을 수 있습니다.
+    /// <b>[검증을 직접 하는 이유]</b> 이 핸들러가 처리하는 세 ID(3·4·18)는 본문이 모두 0B이므로 <b>역직렬화 자체를 하지 않고</b>
+    /// 길이·ID 검증만으로 프레임을 판별합니다. 본문이 있는 패킷을 추가할 때도 이 검증이 <b>선행되어야</b> 합니다 —
+    /// <c>BinaryPacketSerializer.Deserialize&lt;T&gt;</c>는 헤더를 <b>건너뛰기만</b> 할 뿐 타입 ID 일치나 본문 전체 소비를
+    /// 검사하지 않아, 길이·ID를 먼저 확인하지 않으면 "Id=3 자리에 다른 길이의 본문"같은 프레임이 조용히 통과합니다.
     /// <br/><b>[Thread Safety]</b> Thread-safe. <b>[Blocking]</b> Non-blocking(위 클래스 <c>remarks</c>의 경로별 완료 특성 참조).
     /// </remarks>
     public ValueTask HandleAsync(ISession session, ReadOnlyMemory<byte> data)

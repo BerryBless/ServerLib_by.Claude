@@ -451,6 +451,12 @@ public static class CounterScenario
         /// <remarks>
         /// <b>[순서]</b> 대기자를 <b>송신 전에</b> 게시합니다. 송신 후에 게시하면 루프백처럼 빠른 경로에서
         /// 응답이 먼저 도착해 대기자를 놓칠 수 있습니다.
+        /// <br/><b>[불변식 — 포기된 조회가 있는 연결은 재사용하지 않는다]</b> 응답 매칭은 요청 ID 없이
+        /// "연결당 미완료 조회 1건"이라는 전제에만 의존합니다. 따라서 조회를 <b>in-flight 상태로 포기한</b>(취소·송신 실패로
+        /// <c>catch</c>에서 대기자를 회수한) 연결을 다시 조회에 쓰면, 그 사이 도착한 이전 요청의 <b>지연 응답</b>이
+        /// 새 대기자를 낡은 스냅샷으로 완료시킬 수 있습니다(요청 ID가 없어 지연 응답과 새 요청을 구분할 수 없음).
+        /// <b>실패·취소로 조회를 포기한 연결은 반드시 <see cref="DisposeAsync"/>해야 하며 재사용하지 않습니다.</b>
+        /// <c>RunAsync</c>는 이 불변식을 지킵니다 — 조회가 실패하면 곧바로 예외로 빠져나가 <c>finally</c>에서 연결을 폐기합니다.
         /// <br/><b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 조회 1회당 TaskCompletionSource 1개.
         /// </remarks>
         public async Task<CounterSnapshot> QueryAsync(CancellationToken cancellationToken)

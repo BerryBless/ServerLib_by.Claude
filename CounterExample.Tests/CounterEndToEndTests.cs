@@ -475,24 +475,57 @@ public class CounterEndToEndTests
     // ═════════════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// 조회에 절대 응답하지 않는 서버를 상대로 <see cref="CounterScenario.RunAsync"/>가
-    /// 기한 안에 <see cref="TimeoutException"/>으로 끝나고, 매달리지 않고 반환하는지 검증합니다.
+    /// 기준값 조회에는 정상 응답하되 그 이후의 <b>배리어 조회</b>는 드롭하는 서버를 상대로,
+    /// 워커가 증감을 전부 보낸 뒤 배리어에서 멈춘 <b>in-flight 상태</b>에서 기한이 발화해
+    /// <see cref="CounterScenario.RunAsync"/>가 <see cref="TimeoutException"/>으로 끝나고 정리까지 마치는지 검증합니다.
     /// </summary>
     /// <remarks>
-    /// 단순히 대기를 포기하는 것이 아니라 <b>실제 작업 취소와 연결 정리</b>까지 마쳐야 합니다.
-    /// "반환했다"만 확인하면 <c>finally</c>의 정리 루프가 중간에 빠져 연결이 새어도 통과하므로,
-    /// 서버 측 <c>OnClientDisconnected</c>가 <b>연결 수만큼</b> 호출되는 것까지 확인합니다.
+    /// <b>[이 테스트가 실제로 실행하는 경로 — 작업 취소]</b><br/>
+    /// 서버가 <b>모든</b> 조회에 응답하지 않으면 <see cref="CounterScenario.RunAsync"/>는 <b>기준값 조회</b>(<c>:212</c>)에서
+    /// 먼저 막혀, 워커 배열이 채워지지도 않은 채 기한이 발화합니다 — 즉 <b>워커 취소 경로가 전혀 실행되지 않습니다.</b>
+    /// 그래서 여기서는 서버가 <b>1회차(기준값) 조회에는 실제 <see cref="CounterHandler"/>로 정상 응답</b>하고,
+    /// 증감은 정상 처리하며, <b>2회차 이후(배리어) 조회만 드롭</b>합니다. 그러면 워커들이 출발해 증감을 전부 보낸 뒤
+    /// 배리어 조회 응답을 기다리며 멈춘 상태(in-flight)에서 기한이 발화하므로, <c>deadlineCts</c> 취소 →
+    /// 워커의 <c>await waiter.Task.WaitAsync(ct)</c> 취소 → <c>finally</c> 연결 폐기라는 <b>실제 취소·정리 경로</b>가 실행됩니다.
+    /// <br/><br/>
+    /// <b>[검증 축]</b> ① 기한 안에 <see cref="TimeoutException"/>으로 끝나고 매달리지 않는다.
+    /// ② 워커가 실제로 배리어까지 진행했다(서버가 받은 조회 수 = 기준값 1 + 연결 수만큼의 배리어 = <c>1 + Connections</c>).
+    /// ③ 정리가 누락 없이 끝났다(서버 측 <c>OnClientDisconnected</c>가 <b>연결 수만큼</b> 호출된다).
+    /// <br/><br/>
+    /// <b>[서버는 소켓을 계속 읽는다]</b> 배리어 조회는 <b>응답만</b> 보내지 않을 뿐 수신은 계속하므로
+    /// (콜백이 <c>CompletedTask</c>를 반환), 증감 송신이 커널 흐름 제어에 막히지 않습니다.
     /// </remarks>
     [Fact]
     public async Task Scenario_UnresponsiveServer_TimesOutAndCleansUp()
     {
         const int Connections = 2;
+        // 워커가 배리어에 도달하기 전에 실제로 증감을 송신하게 하는 소량의 연산(루프백에서 1s 기한보다 훨씬 빨리 끝난다).
+        const int OpsEachWay = 20;
 
         int port = GetFreePort();
+        var state = new CounterState();
+        var handler = new CounterHandler(state);
 
         IServerListener listener = ServerNet.CreateListener();
-        // 수신은 하되 어떤 응답도 보내지 않는다 → 조회 대기가 영원히 풀리지 않는 상황을 만든다.
-        listener.OnReceived = (ISession _, ReadOnlyMemory<byte> _) => ValueTask.CompletedTask;
+        // long: Interlocked 대상 카운터. 여러 세션의 IO 스레드가 동시에 증가시키므로 원자 연산이 필요하다.
+        long queryCount = 0;
+
+        // 기준값 조회(1회차)만 정상 응답하고, 이후의 배리어 조회는 모두 드롭한다.
+        // 증감 패킷은 실제 CounterHandler로 정상 처리해 워커가 배리어까지 진행하게 한다 → 배리어에서 멈춘
+        // in-flight 상태로 기한이 발화해 RunAsync의 실제 작업 취소·정리 경로를 탄다.
+        listener.OnReceived = (ISession session, ReadOnlyMemory<byte> data) =>
+        {
+            // TryParseHeader: 앞 4B를 무할당으로 해석해 조회 패킷만 골라낸다.
+            if (PacketPool.TryParseHeader(data.Span, out ushort packetId, out _)
+                && packetId == CounterQueryPacket.Id
+                && Interlocked.Increment(ref queryCount) >= 2)
+            {
+                // 응답하지 않고 즉시 반환(수신은 계속) → 이 배리어 조회는 영원히 풀리지 않아 기한이 발화한다.
+                return ValueTask.CompletedTask;
+            }
+            // 증감 + 기준값(1회차) 조회는 실제 핸들러가 처리한다.
+            return handler.HandleAsync(session, data);
+        };
 
         // 소켓이 실제로 정리됐음을 서버 쪽에서 관측하는 신호기.
         // TaskCompletionSource<bool>: IO 스레드(해제 콜백) → 테스트 스레드 전달. RunContinuationsAsynchronously로
@@ -515,20 +548,31 @@ public class CounterEndToEndTests
                 Host = "127.0.0.1",
                 Port = port,
                 ConnectionCount = Connections,
-                IncrementsPerConnection = 1,
-                DecrementsPerConnection = 1,
+                IncrementsPerConnection = OpsEachWay,
+                DecrementsPerConnection = OpsEachWay,
                 Timeout = TimeSpan.FromMilliseconds(UnresponsiveTimeoutMs),
             };
 
             var stopwatch = Stopwatch.StartNew();
             // WaitAsync: RunAsync가 정리까지 마치고 반환하지 않으면 여기서 TimeoutException으로 명확히 실패한다
             // (테스트가 무기한 hang되지 않도록 하는 안전망).
-            await Assert.ThrowsAsync<TimeoutException>(
+            TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
                 () => CounterScenario.RunAsync(options).WaitAsync(TimeSpan.FromMilliseconds(UnresponsiveObserveMarginMs)));
             stopwatch.Stop();
 
+            // 이 TimeoutException이 RunAsync 내부의 기한 경로(배리어에서 취소 → ThrowIfDeadlineAsync)가 낸 것인지,
+            // 아니면 RunAsync가 매달려 위 WaitAsync 안전망(프레임워크 기본 메시지)이 낸 것인지 구분한다.
+            // RunAsync 고유 메시지가 확인돼야 "워커가 배리어에서 실제로 취소·정리됐다"가 성립한다(단순 hang이 아님).
+            Assert.Contains("경합 카운터 시나리오가 기한", timeout.Message);
+
             Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(UnresponsiveObserveMarginMs),
                 $"무응답 서버에서 시나리오 정리가 지연됐습니다({stopwatch.Elapsed}).");
+
+            // 워커가 실제로 배리어까지 진행해 in-flight 취소 경로를 탔는지 서버 수신으로 교차 확인한다.
+            // 기준값 조회 1회 + 연결 수만큼의 배리어 조회가 도달해야 한다(= 1 + Connections).
+            // 이 단언이 예전 테스트가 놓친 "워커 미출발"(조회가 기준값에서만 막힘)을 결정적으로 배제한다.
+            Assert.True(Interlocked.Read(ref queryCount) >= 1 + Connections,
+                $"워커가 배리어까지 진행하지 못했습니다(서버 수신 조회 {Interlocked.Read(ref queryCount)}회, 기대 ≥ {1 + Connections}회).");
 
             // 반환만으로는 부족하다 — 연결이 실제로 끊겼는지 서버 쪽에서 확인한다.
             // 정리 루프가 일부 연결을 빠뜨리면 이 대기가 타임아웃되어 실패한다.
@@ -537,8 +581,57 @@ public class CounterEndToEndTests
         }
         finally
         {
+            // Stop()은 이 테스트에서 여기 한 곳에서만, 정확히 1회 호출된다(콜백에서 Stop을 부르지 않는다 → R-C6).
             listener.Stop();
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // 테스트 9 — 핸들러 방어 코드 직접 검증(트랜스포트로는 도달 불가)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 트랜스포트(프레이밍 계층)를 경유해서는 만들 수 없는 두 프레임을 <see cref="CounterHandler.HandleAsync"/>에
+    /// <b>직접</b> 넘겨 방어 코드 자체를 검증합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[왜 직접 호출하는가]</b> 프레이밍 계층은 헤더가 선언한 <c>bodyLength</c>만큼 잘라 콜백에 넘기므로,
+    /// 소켓 경유 프레임은 <b>항상</b> <c>frame.Length == HeaderSize + bodyLength</c>를 만족합니다. 따라서
+    /// <c>CounterHandler.cs</c>의 (a) <b>프레임 길이 교차 검증</b> 분기와 (b) <b>조회(Id=18)의 <c>RequireBodySize</c></b> 분기는
+    /// E2E 경로로는 영원히 커버되지 않습니다. 이 단위 테스트가 두 공백을 닫습니다.
+    /// <br/><b>[<c>session</c>을 <see langword="null"/>로 넘기는 이유]</b> 두 경로 모두 <see cref="CounterState"/>를
+    /// <b>건드리기 전에</b>, 그리고 조회 응답 송신(<c>session</c> 사용)에 <b>도달하기 전에</b> 예외를 던지므로
+    /// <c>session</c>은 역참조되지 않습니다. 따라서 스텁 없이 <see langword="null"/>로 충분합니다.
+    /// <br/><b>[메시지 판별]</b> 두 경로는 같은 접두사를 쓰므로, 경로가 뒤바뀌는 회귀를 잡기 위해
+    /// 각 경로의 <b>구별되는 본문 문구</b>까지 단언합니다.
+    /// </remarks>
+    [Fact]
+    public async Task Handler_DirectCall_RejectsFramesUnreachableViaTransport()
+    {
+        var handler = new CounterHandler(new CounterState());
+
+        // (a) 헤더는 본문 4B를 선언했지만 실제 프레임은 헤더 4B뿐 → frame.Length(4) != HeaderSize(4)+4.
+        //     프레이밍 계층은 선언 길이만큼 잘라 주므로 이 불일치는 소켓 경유로는 결코 도달하지 못한다.
+        var lengthMismatch = new byte[PacketPool.HeaderSize];
+        PacketPool.WriteHeader(lengthMismatch, IncrementPacket.Id, bodyLength: 4);
+
+        InvalidDataException mismatchError = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await handler.HandleAsync(session: null!, lengthMismatch.AsMemory()));
+        Assert.Contains(CounterHandler.InvalidBodyMessagePrefix, mismatchError.Message);
+        // 프레임 길이 교차 검증 분기가 낸 메시지임을 확정한다(RequireBodySize 분기와 구별).
+        Assert.Contains("선언 4B, 실제 0B", mismatchError.Message);
+
+        // (b) 조회(Id=18)인데 본문 4B를 선언·동반 → frame.Length(8)==HeaderSize(4)+4라 길이 교차 검증은 통과하고,
+        //     스위치의 case 18에서 RequireBodySize(expected: 0)가 위반을 잡는다. 이 분기는 실패 경로 E2E 테스트
+        //     (Id=3·Id=250)가 건드리지 않던 곳이다.
+        var queryWrongBody = new byte[PacketPool.HeaderSize + 4];
+        PacketPool.WriteHeader(queryWrongBody, CounterQueryPacket.Id, bodyLength: 4);
+
+        InvalidDataException queryError = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await handler.HandleAsync(session: null!, queryWrongBody.AsMemory()));
+        Assert.Contains(CounterHandler.InvalidBodyMessagePrefix, queryError.Message);
+        // RequireBodySize(Id=18, expected=0, actual=4)가 낸 메시지임을 확정한다(길이 교차 검증 분기와 구별).
+        Assert.Contains($"Id={CounterQueryPacket.Id}는 0B여야 하는데 4B입니다", queryError.Message);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
