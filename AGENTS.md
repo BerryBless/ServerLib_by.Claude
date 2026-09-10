@@ -25,20 +25,21 @@
 
 **트리거:** `/commitandpush`, 커밋해줘, 푸시해줘, 변경사항 올려줘, 깃 커밋 요청 시 `commitandpush` 스킬을 사용하라.
 
-**자동 커밋 메시지 전달 (필수 행동 규칙):**
-코드·파일 변경을 완료하고 턴을 마치기 직전, WHY 중심 한국어 커밋 메시지를 **`.git/auto_commit_msg.txt`** 에 UTF-8로 작성한다.
+**커밋 규칙 (Codex 세션 전용 — 필수 행동 규칙):**
+`auto-commit.ps1` Stop 훅은 **Claude Code 전용**이라 Codex 세션에서는 실행되지 않는다. 커밋 요청 시 Codex는 아래 형식으로 **직접 `git commit`** 한다.
 - 형식: `{접두사}: {제목}` (접두사: 추가/수정/버그수정/리팩토링/문서/테스트/의존성)
 - 제목: 50자 이내, 파일명 나열 금지, WHY 중심
 - 본문(선택): `- ` 항목 나열
-- 마지막 줄(필수): `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
+- 마지막 줄(필수): `Co-Authored-By: Codex <noreply@openai.com>`
 
-Stop 훅(`auto-commit.ps1`)이 이 파일을 읽어 커밋하고 즉시 삭제한다. 파일을 남기지 않으면 접두사 기반 폴백 메시지로 커밋된다(안전망).
+**주의:** `.git/auto_commit_msg.txt`는 Claude Code Stop 훅의 전달 채널이므로 Codex는 이 파일을 절대 생성·수정하지 않는다 (남겨두면 다음 Claude 세션의 훅이 엉뚱한 메시지로 커밋한다).
 
 **변경 이력:**
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
 | 2026-06-03 | 초기 구성 | 전체 | Git 자동 커밋&푸시 파이프라인 구축 |
 | 2026-06-03 | 파일 기반 메시지 전달로 재설계 | auto-commit.ps1 | nested claude -p 콜드스타트/stdin 취약성으로 폴백 빈발 |
+| 2026-09-10 | Codex 직접 커밋 규칙으로 분기 | AGENTS.md | Stop 훅은 Claude Code 전용이라 Codex 세션에서 메시지 파일이 잔류하는 문제 방지 |
 
 ---
 
@@ -141,21 +142,6 @@ private readonly byte[] _recvBuffer = ArrayPool<byte>.Shared.Rent(4096);
 // 짧은 임계 구간에서 Mutex보다 컨텍스트 스위치 비용이 낮아 고빈도 송신 제한에 적합
 private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 ```
-
----
-
-## 하네스: Codex 협업 (Claude ↔ OpenAI Codex CLI)
-
-**목표:** Claude Code 세션 안에서 `codex exec`를 세컨드 오피니언·교차 검증·병렬 작업자로 호출한다. Codex는 `AGENTS.md`와 `.agents/skills/` 미러를 읽으므로 프로젝트 규칙이 자동 공유된다.
-
-**트리거:** codex, 코덱스, codex에게 물어봐, 세컨드 오피니언, codex 리뷰, 교차 리뷰 요청 시 `codex` 스킬을 사용하라.
-
-**동기화 규칙:** `CLAUDE.md`·`.claude/skills/`를 수정하면 `AGENTS.md`·`.agents/skills/` 미러도 함께 갱신할 것. 단, Git 하네스 섹션은 의도적으로 다르다 — Claude는 Stop 훅 파일 전달(`.git/auto_commit_msg.txt`), Codex는 직접 커밋(`Co-Authored-By: Codex <noreply@openai.com>`).
-
-**변경 이력:**
-| 날짜 | 변경 내용 | 대상 | 사유 |
-|------|----------|------|------|
-| 2026-09-10 | 초기 구성 | codex 스킬·AGENTS.md | Codex CLI 병행 사용 + Claude→Codex 호출 워크플로 구축 |
 
 ---
 
