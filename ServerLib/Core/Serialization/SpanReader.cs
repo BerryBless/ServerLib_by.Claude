@@ -142,7 +142,7 @@ public ref struct SpanReader
 
     /// <summary>
     /// 남은 모든 바이트를 Zero-copy 슬라이스로 반환하고 위치를 끝으로 이동합니다.
-    /// 본문 전체를 길이 접두어 없이 읽어야 하는 패킷(예: <c>StatsResponsePacket</c>)에서 사용합니다.
+    /// 본문 전체를 길이 접두어 없이 읽어야 하는 패킷에서 사용합니다.
     /// </summary>
     /// <returns>현재 위치부터 버퍼 끝까지의 슬라이스입니다. 원본 버퍼 수명에 종속됩니다.</returns>
     /// <remarks>

@@ -11,7 +11,7 @@
 
 **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
 
-**참고:** `ServerLib/Core/Serialization/Packets/`에는 삭제된 데모가 쓰던 패킷 타입(Damage·Mob·Ticket·Seat·Login·AuthToken·Increment·Decrement·CounterQuery·CounterValue 등)이 남아 있다. 라이브러리 코어(Transport·직렬화·세션·하트비트)와 무관한 데모 프로토콜이므로, 추가 정리 시 `EchoPacket`·`PingPacket`·`PongPacket`만 남기고 제거를 검토할 수 있다.
+**패킷 타입(2026-09-11 데모 패킷 정리 완료):** `ServerLib/Core/Serialization/Packets/`에는 코어에 필요한 `EchoPacket`(예제·테스트)·`PingPacket`·`PongPacket`(하트비트)만 남는다. 데모 전용 패킷(Damage·Mob·Ticket·Seat·Login·AuthToken·Increment·Decrement·Counter·Chat·Stats)은 모두 제거됐다. 새 패킷은 `IPacket`을 구현하고 Id 충돌만 피하면 어느 프로젝트에서든 정의할 수 있으므로, 데모/애플리케이션 전용 패킷은 라이브러리가 아닌 소비 측에 두는 것을 권장한다.
 
 새 public API를 추가하면 `EchoExample.Tests`에 사용·검증 케이스를 함께 추가할 것.
 
