@@ -172,6 +172,7 @@ private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 |------|----------|------|------|
 | 2026-09-10 | 초기 구성 | cross-verify 스킬 + cross-planner/cross-implementer/cross-reviewer/codex-adapter 에이전트 | Plan·리뷰 교차 검증 파이프라인 구축 |
 | 2026-09-10 | 트리거 조건 강화 — 코덱스/Codex 키워드 필수 | cross-verify description·CLAUDE.md | 키워드 없는 일반 검증 요청에 고비용 파이프라인이 오발동하지 않도록 사용자 요청 |
+| 2026-09-10 | 토큰 부족 시 Claude 단독 폴백 추가 | invoke-codex.ps1(status=quota)·codex-adapter·cross-verify | Codex 사용량 한도로 파이프라인이 멈추는 대신 작업을 완료하고 "교차 검증 아님"을 명시 피드백하도록 사용자 요청 |
 
 ---
 

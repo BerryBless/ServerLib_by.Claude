@@ -10,7 +10,8 @@
 # 결과:
 #   - OutFile        : Codex의 최종 응답 (codex exec -o)
 #   - OutFile+.meta.json : { status, exit_code, duration_sec, out_bytes, started_at, cmd }
-#     status = "success" | "timeout" | "error" | "empty-output"
+#     status = "success" | "timeout" | "error" | "empty-output" | "quota"
+#     quota  = 사용량/토큰 한도 실패 — 오케스트레이터가 Claude 단독 폴백(저하 모드)으로 전환하는 트리거
 #   - exit code      : success=0, 그 외=1  (호출 실패는 검증 통과와 반드시 구분할 것)
 #
 # 안전 규칙:
@@ -77,9 +78,13 @@ try {
     }
 
     if ($proc.ExitCode -ne 0) {
-        Write-Meta 'error' $proc.ExitCode
-        $errTail = (Test-Path $errFile) ? ((Get-Content $errFile -Tail 5) -join ' | ') : ''
-        Write-Error "Codex 호출 실패 (exit $($proc.ExitCode)): $errTail"
+        $errText = (Test-Path $errFile) ? (Get-Content $errFile -Raw) : ''
+        # 사용량/토큰 한도 실패를 'quota'로 별도 분류 — 오케스트레이터의 Claude 단독 폴백 판단 근거.
+        # 'token' 단독 매칭은 인증 토큰 오류와 혼동되므로 제외하고, 한도 관련 표현만 매칭한다.
+        $isQuota = $errText -match '(?i)rate[ _-]?limit|usage[ _-]?limit|too many requests|quota|\b429\b|insufficient[ _-]?(credits|quota)|usage cap|limit reached'
+        Write-Meta ($isQuota ? 'quota' : 'error') $proc.ExitCode
+        $errTail = ($errText.Length -gt 0) ? (($errText -split "`n" | Select-Object -Last 5) -join ' | ') : ''
+        Write-Error "Codex 호출 실패 ($(($isQuota) ? '토큰/사용량 한도' : 'error'), exit $($proc.ExitCode)): $errTail"
         exit 1
     }
 
