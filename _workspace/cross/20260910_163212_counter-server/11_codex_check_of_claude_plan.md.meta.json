@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "exit_code": 0,
+  "duration_sec": 154.4,
+  "out_file": "E:\\project\\ClaudeCodeStudy\\_workspace\\cross\\20260910_163212_counter-server\\11_codex_check_of_claude_plan.md",
+  "out_bytes": 10863,
+  "started_at": "2026-09-10T16:45:39.4032756+09:00",
+  "prompt_file": "E:\\project\\ClaudeCodeStudy\\_workspace\\cross\\20260910_163212_counter-server\\p_plan_check.md",
+  "sandbox": "read-only"
+}

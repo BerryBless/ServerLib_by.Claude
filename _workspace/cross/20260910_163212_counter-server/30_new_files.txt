@@ -1,0 +1,17 @@
+ M AGENTS.md
+ M CLAUDE.md
+ M ClaudeCodeStudy.sln
+ A CounterClient/CounterClient.csproj
+ A CounterClient/CounterScenario.cs
+ A CounterClient/Program.cs
+ A CounterExample.Tests/CounterEndToEndTests.cs
+ A CounterExample.Tests/CounterExample.Tests.csproj
+ A CounterExample.Tests/CounterPacketTests.cs
+ A CounterExample.Tests/CounterStateTests.cs
+ A CounterServer/CounterHandler.cs
+ A CounterServer/CounterServer.csproj
+ A CounterServer/CounterState.cs
+ A CounterServer/Program.cs
+ A ServerLib/Core/Serialization/Packets/CounterQueryPacket.cs
+ A ServerLib/Core/Serialization/Packets/CounterValuePacket.cs
+ A plan/contention_counter_0910.md

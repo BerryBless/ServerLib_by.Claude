@@ -1,0 +1,66 @@
+# 32_test_results_r2.txt — 리뷰 수정 라운드 r2 테스트 실행 원문
+
+대상: Codex 재리뷰(r2) 유효 판정 4건(R-X1~X4) + R-C6 반영 후 검증.
+게이트: dotnet build → dotnet test CounterExample.Tests → dotnet test 전체 sln, 전량 통과·실패 0.
+races(테스트 5·7·신규 빈 실행) 대비로 CounterExample.Tests를 추가 반복 실행.
+
+수정된 산출물 파일:
+- CounterClient/CounterScenario.cs          (R-X1: Validate 합계 0 허용, 음수만 거부)
+- CounterServer/CounterHandler.cs            (R-X4: 조회 경로 무할당 주석 정밀화 3곳)
+- CounterExample.Tests/CounterEndToEndTests.cs (R-X1 빈 실행 E2E 추가·상수 relabel, R-X2/R-C6 테스트7 재작성, R-X3 테스트5 강화)
+
+════════════════════════════════════════════════════════════════════════════
+[1] dotnet build ClaudeCodeStudy.sln -c Release
+════════════════════════════════════════════════════════════════════════════
+빌드했습니다.
+    경고 0개
+    오류 0개
+경과 시간: 00:00:03.05
+
+════════════════════════════════════════════════════════════════════════════
+[2] dotnet test CounterExample.Tests/CounterExample.Tests.csproj -c Release   (최초, 빌드 포함)
+════════════════════════════════════════════════════════════════════════════
+  ServerLib -> ...\ServerLib.dll
+  CounterClient -> ...\CounterClient.dll
+  CounterServer -> ...\CounterServer.dll
+  CounterExample.Tests -> ...\CounterExample.Tests.dll
+지정된 패턴과 일치한 총 테스트 파일 수는 1개입니다.
+
+통과!  - 실패:     0, 통과:    28, 건너뜀:     0, 전체:    28, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+  (27 → 28: 신규 빈 실행 테스트 Scenario_ZeroOperations_StillTraversesBarrierAndReportsZero 1건 추가)
+
+════════════════════════════════════════════════════════════════════════════
+[3] dotnet test ClaudeCodeStudy.sln -c Release   (전체 sln)
+════════════════════════════════════════════════════════════════════════════
+  ServerLib -> ...\ServerLib.dll
+  CounterServer -> ...\CounterServer.dll
+  CounterClient -> ...\CounterClient.dll
+  EchoExample.Tests -> ...\EchoExample.Tests.dll
+  CounterExample.Tests -> ...\CounterExample.Tests.dll
+지정된 패턴과 일치한 총 테스트 파일 수는 1개입니다.
+지정된 패턴과 일치한 총 테스트 파일 수는 1개입니다.
+
+통과!  - 실패:     0, 통과:    14, 건너뜀:     0, 전체:    14, 기간: 98 ms - EchoExample.Tests.dll (net10.0)
+통과!  - 실패:     0, 통과:    28, 건너뜀:     0, 전체:    28, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+  (sln 내 테스트 프로젝트는 EchoExample.Tests·CounterExample.Tests 2개. ServerLib.Tests는 이 sln에 포함되지 않음.)
+  합계: 42/42 통과, 실패 0.
+
+════════════════════════════════════════════════════════════════════════════
+[4] CounterExample.Tests 반복 실행 (races 대비, --no-build)
+════════════════════════════════════════════════════════════════════════════
+=== RUN 1 ===
+통과!  - 실패:     0, 통과:    28, 건너뜀:     0, 전체:    28, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+=== RUN 2 ===
+통과!  - 실패:     0, 통과:    28, 건너뜀:     0, 전체:    28, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+=== RUN 3 ===
+통과!  - 실패:     0, 통과:    28, 건너뜀:     0, 전체:    28, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+CounterExample.Tests 누적 5회 실행([2]+[3]+[4]×3) 전부 28/28 통과 — 테스트 5·7·신규 빈 실행 안정.
+
+════════════════════════════════════════════════════════════════════════════
+게이트 판정: PASS
+- build 0오류 0경고
+- CounterExample.Tests 28/28 (5회 연속 그린)
+- 전체 sln 42/42 (실패 0)

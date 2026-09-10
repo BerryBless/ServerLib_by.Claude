@@ -1,0 +1,2615 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 18713b4..d75d861 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -14,6 +14,8 @@
+ - `EchoServer/Program.cs` — **학습용 에코 서버 예제**(포트 9000): `ServerNet.CreateListener()` → `OnReceived`에서 `EchoPacket`(Id=1) 역직렬화 → 동일 메시지 재전송. 모든 ServerLib 사용 지점에 XML 문서 + 네트워크/메모리 내부동작 인라인 주석 전적용. 종료: 아무 키.
+ - `EchoClient/Program.cs` — **학습용 에코 클라이언트 예제**(인터랙티브 콘솔): `ServerNet.CreateClient()` → `ConnectAsync("127.0.0.1", 9000)` → 콘솔 입력을 `EchoPacket`으로 전송, 에코 응답 출력. `await using` 패턴으로 `IAsyncDisposable` 정리. 종료: `exit`.
+ - `EchoWeb/Program.cs` — **브라우저용 웹 에코 데모**(ASP.NET Core, `http://127.0.0.1:8080`): 브라우저가 raw TCP를 직접 말할 수 없으므로 `/ws` WebSocket ↔ 기존 `EchoServer.exe`(9000) TCP 간 프로토콜 변환 브리지만 담당(에코 로직은 재사용, 별도 프로세스 구성). WebSocket 연결 1개 = `ServerNet.CreateClient()` 세션 1개(per-session 격리); `Channel<string>` 단일 소비자 펌프로 `WebSocket.SendAsync` 동시호출 금지 제약 충족; 단일 `CancellationTokenSource`로 브라우저 종료·9000 드롭 두 실패원을 수렴시켜 Cancel→채널종료→펌프대기→WS close→`echo` dispose 순서 고정; `wwwroot/index.html`은 `textContent` 렌더로 XSS 방지. 설계 문서: `plan/echoweb_0702.md`.
++- `CounterServer/Program.cs` — **경합(contention) 시연용 공유 카운터 서버 예제**(127.0.0.1:9300 루프백 전용): `ServerNet.CreateListener()` → `CounterHandler.HandleAsync`를 `OnReceived`에 직결. 모든 세션이 공유하는 `CounterState`(Interlocked `long` 2개 — `Value`·`AppliedOps`)를 `IncrementPacket`(Id=3) +1 / `DecrementPacket`(Id=4) −1로 갱신하고, `CounterQueryPacket`(Id=18, 0B) 수신 시 `CounterValuePacket`(Id=19, **16B** = `long Value` + `long AppliedOps`)로 회신. `Deserialize<T>`가 타입 ID를 검증하지 않으므로 헤더 id·선언/실제 본문 길이를 핸들러가 직접 교차 검증하고, 위반·미지 ID·조회 응답 송신 실패는 예외로 표면화해 **해당 세션만** 종료(카운터 불변, 자동 재송신 없음 — `SocketException`을 "상대 종료"로 단정하지 않음). 종료 시 출력하는 `Value`는 정지 보장이 없어 **참고용**이며 검증 판정이 아니다. 종료: 아무 키.
++- `CounterClient/Program.cs` — **다중 연결 동시 증감 검증 예제**: `CounterScenario.RunAsync`(Program과 `CounterExample.Tests` E2E가 **공유**하는 실행기) 호출 — 8연결을 공통 시작 신호로 동시 출발 → 연결당 더하기 1,000·빼기 750을 Bresenham 균등 분산 + 연결별 위상 회전으로 뒤섞어 송신(4B 프레임 1회 직렬화 후 재사용 → 송신당 직렬화 무할당) → **연결별 마지막 명령 뒤 조회 = 그 연결의 처리 완료 배리어**(서버 수신 루프가 세션별로 순차 await하므로 성립) → 전 연결 확인 후 **정지 상태**에서 최종 조회 → `Value == 8×(1,000−750) = 2,000` **및** `AppliedOps == 8×1,750 = 14,000` 동시 검증 후 PASS/FAIL·종료 코드(0=PASS, 1=값 불일치, 2=통신 오류·타임아웃). 두 값의 쌍은 비원자이므로 배리어 이후에만 함께 단언한다. 검증은 **새 서버 + 단일 실행** 전제(재검증 시 서버 재시작 안내). 설계 문서: `plan/contention_counter_0910.md`.
+ 
+ **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
+ 
+@@ -87,6 +89,7 @@ plan/<기능명>_<MMDD>.md
+ | `plan/dbperf_test_0627.md` | 2026-06-27 | DB 포함 성능 테스트 하네스 (closed-loop login·token-resolve, [DBSTATS] 순수 DB 지연 분리, docker-compose) |
+ | `plan/test_review_0628.md` | 2026-06-28 | ServerLib.Tests 종합 코드 리뷰 (품질 감사+커버리지 갭, QUALITY-I 4건 수정·GAP-C/I 22건 신규 추가, 210 테스트) |
+ | `plan/echoweb_0702.md` | 2026-07-02 | 웹 기반 에코 데모 서버 (EchoWeb: WebSocket↔EchoClient(TCP) 브리지, 별도 프로세스 구성, Channel 단일소비자 펌프, linkCts 통합 teardown) |
++| `plan/contention_counter_0910.md` | 2026-09-10 | 경합 카운터 서버 (CounterServer 9300 루프백·CounterClient·CounterExample.Tests 신규 3개 + sln 등록, Interlocked `CounterState`(Value·AppliedOps), CounterQueryPacket Id=18(0B)/CounterValuePacket Id=19(16B), 연결별 조회 배리어 후 정지 상태 검증, 26개 신규 테스트) |
+ 
+ ---
+ 
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 7ffe486..6df63f7 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -14,6 +14,8 @@
+ - `EchoServer/Program.cs` — **학습용 에코 서버 예제**(포트 9000): `ServerNet.CreateListener()` → `OnReceived`에서 `EchoPacket`(Id=1) 역직렬화 → 동일 메시지 재전송. 모든 ServerLib 사용 지점에 XML 문서 + 네트워크/메모리 내부동작 인라인 주석 전적용. 종료: 아무 키.
+ - `EchoClient/Program.cs` — **학습용 에코 클라이언트 예제**(인터랙티브 콘솔): `ServerNet.CreateClient()` → `ConnectAsync("127.0.0.1", 9000)` → 콘솔 입력을 `EchoPacket`으로 전송, 에코 응답 출력. `await using` 패턴으로 `IAsyncDisposable` 정리. 종료: `exit`.
+ - `EchoWeb/Program.cs` — **브라우저용 웹 에코 데모**(ASP.NET Core, `http://127.0.0.1:8080`): 브라우저가 raw TCP를 직접 말할 수 없으므로 `/ws` WebSocket ↔ 기존 `EchoServer.exe`(9000) TCP 간 프로토콜 변환 브리지만 담당(에코 로직은 재사용, 별도 프로세스 구성). WebSocket 연결 1개 = `ServerNet.CreateClient()` 세션 1개(per-session 격리); `Channel<string>` 단일 소비자 펌프로 `WebSocket.SendAsync` 동시호출 금지 제약 충족; 단일 `CancellationTokenSource`로 브라우저 종료·9000 드롭 두 실패원을 수렴시켜 Cancel→채널종료→펌프대기→WS close→`echo` dispose 순서 고정; `wwwroot/index.html`은 `textContent` 렌더로 XSS 방지. 설계 문서: `plan/echoweb_0702.md`.
++- `CounterServer/Program.cs` — **경합(contention) 시연용 공유 카운터 서버 예제**(127.0.0.1:9300 루프백 전용): `ServerNet.CreateListener()` → `CounterHandler.HandleAsync`를 `OnReceived`에 직결. 모든 세션이 공유하는 `CounterState`(Interlocked `long` 2개 — `Value`·`AppliedOps`)를 `IncrementPacket`(Id=3) +1 / `DecrementPacket`(Id=4) −1로 갱신하고, `CounterQueryPacket`(Id=18, 0B) 수신 시 `CounterValuePacket`(Id=19, **16B** = `long Value` + `long AppliedOps`)로 회신. `Deserialize<T>`가 타입 ID를 검증하지 않으므로 헤더 id·선언/실제 본문 길이를 핸들러가 직접 교차 검증하고, 위반·미지 ID·조회 응답 송신 실패는 예외로 표면화해 **해당 세션만** 종료(카운터 불변, 자동 재송신 없음 — `SocketException`을 "상대 종료"로 단정하지 않음). 종료 시 출력하는 `Value`는 정지 보장이 없어 **참고용**이며 검증 판정이 아니다. 종료: 아무 키.
++- `CounterClient/Program.cs` — **다중 연결 동시 증감 검증 예제**: `CounterScenario.RunAsync`(Program과 `CounterExample.Tests` E2E가 **공유**하는 실행기) 호출 — 8연결을 공통 시작 신호로 동시 출발 → 연결당 더하기 1,000·빼기 750을 Bresenham 균등 분산 + 연결별 위상 회전으로 뒤섞어 송신(4B 프레임 1회 직렬화 후 재사용 → 송신당 직렬화 무할당) → **연결별 마지막 명령 뒤 조회 = 그 연결의 처리 완료 배리어**(서버 수신 루프가 세션별로 순차 await하므로 성립) → 전 연결 확인 후 **정지 상태**에서 최종 조회 → `Value == 8×(1,000−750) = 2,000` **및** `AppliedOps == 8×1,750 = 14,000` 동시 검증 후 PASS/FAIL·종료 코드(0=PASS, 1=값 불일치, 2=통신 오류·타임아웃). 두 값의 쌍은 비원자이므로 배리어 이후에만 함께 단언한다. 검증은 **새 서버 + 단일 실행** 전제(재검증 시 서버 재시작 안내). 설계 문서: `plan/contention_counter_0910.md`.
+ 
+ **캡슐화(v1.1.0~):** Transport 구현체(`SocketPipelineListener`/`~Client`/`~Session`)와 `SessionRegistry`는 `internal`. 외부 소비자는 `ServerNet` 팩토리가 반환하는 인터페이스로만 사용한다. 직렬화 빌딩블록(`IPacket`·`IPacketSerializer`·`BinaryPacketSerializer`·패킷 타입·`PacketPool`)은 public. 새 Transport 진입점을 추가하면 `ServerNet` 팩토리에도 생성 메서드를 노출할 것.
+ 
+@@ -86,6 +88,7 @@ plan/<기능명>_<MMDD>.md
+ | `plan/dbperf_test_0627.md` | 2026-06-27 | DB 포함 성능 테스트 하네스 (closed-loop login·token-resolve, [DBSTATS] 순수 DB 지연 분리, docker-compose) |
+ | `plan/test_review_0628.md` | 2026-06-28 | ServerLib.Tests 종합 코드 리뷰 (품질 감사+커버리지 갭, QUALITY-I 4건 수정·GAP-C/I 22건 신규 추가, 210 테스트) |
+ | `plan/echoweb_0702.md` | 2026-07-02 | 웹 기반 에코 데모 서버 (EchoWeb: WebSocket↔EchoClient(TCP) 브리지, 별도 프로세스 구성, Channel 단일소비자 펌프, linkCts 통합 teardown) |
++| `plan/contention_counter_0910.md` | 2026-09-10 | 경합 카운터 서버 (CounterServer 9300 루프백·CounterClient·CounterExample.Tests 신규 3개 + sln 등록, Interlocked `CounterState`(Value·AppliedOps), CounterQueryPacket Id=18(0B)/CounterValuePacket Id=19(16B), 연결별 조회 배리어 후 정지 상태 검증, 26개 신규 테스트) |
+ 
+ ---
+ 
+diff --git a/ClaudeCodeStudy.sln b/ClaudeCodeStudy.sln
+index 1037aac..d326950 100644
+--- a/ClaudeCodeStudy.sln
++++ b/ClaudeCodeStudy.sln
+@@ -10,6 +10,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EchoExample.Tests", "EchoEx
+ EndProject
+ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EchoWeb", "EchoWeb\EchoWeb.csproj", "{8F2AB260-0516-443D-8068-E4A0CC8B4BCE}"
+ EndProject
++Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CounterServer", "CounterServer\CounterServer.csproj", "{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}"
++EndProject
++Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CounterClient", "CounterClient\CounterClient.csproj", "{1DB6F59B-05AA-40D2-A736-6618A1154BE8}"
++EndProject
++Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CounterExample.Tests", "CounterExample.Tests\CounterExample.Tests.csproj", "{0BEEE90F-A594-48DE-A1EA-31F9942CF665}"
++EndProject
+ Global
+ 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+ 		Debug|Any CPU = Debug|Any CPU
+@@ -80,6 +86,42 @@ Global
+ 		{8F2AB260-0516-443D-8068-E4A0CC8B4BCE}.Release|x64.Build.0 = Release|Any CPU
+ 		{8F2AB260-0516-443D-8068-E4A0CC8B4BCE}.Release|x86.ActiveCfg = Release|Any CPU
+ 		{8F2AB260-0516-443D-8068-E4A0CC8B4BCE}.Release|x86.Build.0 = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|Any CPU.Build.0 = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|x64.ActiveCfg = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|x64.Build.0 = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|x86.ActiveCfg = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Debug|x86.Build.0 = Debug|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|Any CPU.ActiveCfg = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|Any CPU.Build.0 = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|x64.ActiveCfg = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|x64.Build.0 = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|x86.ActiveCfg = Release|Any CPU
++		{C66CEF9A-93F4-4C7D-B2DC-805C87C1B03A}.Release|x86.Build.0 = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|Any CPU.Build.0 = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|x64.ActiveCfg = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|x64.Build.0 = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|x86.ActiveCfg = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Debug|x86.Build.0 = Debug|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|Any CPU.ActiveCfg = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|Any CPU.Build.0 = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|x64.ActiveCfg = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|x64.Build.0 = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|x86.ActiveCfg = Release|Any CPU
++		{1DB6F59B-05AA-40D2-A736-6618A1154BE8}.Release|x86.Build.0 = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|Any CPU.Build.0 = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|x64.ActiveCfg = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|x64.Build.0 = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|x86.ActiveCfg = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Debug|x86.Build.0 = Debug|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|Any CPU.ActiveCfg = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|Any CPU.Build.0 = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|x64.ActiveCfg = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|x64.Build.0 = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|x86.ActiveCfg = Release|Any CPU
++		{0BEEE90F-A594-48DE-A1EA-31F9942CF665}.Release|x86.Build.0 = Release|Any CPU
+ 	EndGlobalSection
+ 	GlobalSection(SolutionProperties) = preSolution
+ 		HideSolutionNode = FALSE
+diff --git a/CounterClient/CounterClient.csproj b/CounterClient/CounterClient.csproj
+new file mode 100644
+index 0000000..b6414bb
+--- /dev/null
++++ b/CounterClient/CounterClient.csproj
+@@ -0,0 +1,13 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType>
++    <TargetFramework>net10.0</TargetFramework>
++    <Nullable>enable</Nullable>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <RootNamespace>CounterClient</RootNamespace>
++  </PropertyGroup>
++  <ItemGroup>
++    <!-- ServerLib를 소스 참조: 동일 솔루션 내 라이브러리를 DLL이 아닌 소스로 빌드하여 IntelliSense·디버깅 지원 -->
++    <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
++  </ItemGroup>
++</Project>
+diff --git a/CounterClient/CounterScenario.cs b/CounterClient/CounterScenario.cs
+new file mode 100644
+index 0000000..d45c2a8
+--- /dev/null
++++ b/CounterClient/CounterScenario.cs
+@@ -0,0 +1,491 @@
++using System.Diagnostics;
++using System.IO;
++using ServerLib;
++using ServerLib.Core.Memory;
++using ServerLib.Core.Serialization;
++using ServerLib.Core.Serialization.Packets;
++using ServerLib.Interface;
++
++namespace CounterClient;
++
++/// <summary>
++/// 서버가 <see cref="CounterValuePacket"/>으로 회신한 카운터 스냅샷입니다.
++/// </summary>
++/// <param name="Value">조회 시점의 카운터 값(더하기 − 빼기)입니다.</param>
++/// <param name="AppliedOps">조회 시점까지 실제로 적용된 증감 연산의 총 횟수입니다.</param>
++/// <remarks>
++/// <b>[Thread Safety]</b> 불변 값 타입이므로 Thread-safe. <b>[Memory]</b> <c>readonly record struct</c>라 힙 할당이 없습니다.
++/// <br/><b>[두 값의 원자성]</b> 서버는 두 값을 <b>따로</b> 원자 읽기 하므로, 갱신이 진행 중일 때의 스냅샷은
++/// 두 값이 서로 다른 시점일 수 있습니다. 두 값을 함께 단언하는 것은 <b>정지 상태(배리어 이후 최종 조회)</b>에서만 유효합니다.
++/// </remarks>
++public readonly record struct CounterSnapshot(long Value, long AppliedOps);
++
++/// <summary>
++/// <see cref="CounterScenario.RunAsync"/>의 실행 설정입니다.
++/// </summary>
++/// <remarks>
++/// <b>[Thread Safety]</b> 생성 후 변경하지 않는 것을 전제로 합니다(<c>init</c> 전용 속성). 그렇게 쓰면 Thread-safe.
++/// <br/><b>[Memory]</b> 인스턴스 1회 할당. <b>[Blocking]</b> 해당 없음(순수 데이터).
++/// </remarks>
++public sealed class CounterScenarioOptions
++{
++    /// <summary>서버 호스트입니다. 기본값은 루프백(127.0.0.1)입니다.</summary>
++    public string Host { get; init; } = "127.0.0.1";
++
++    /// <summary>서버 포트입니다. 기본값은 <c>CounterServer</c>가 바인딩하는 9300입니다.</summary>
++    public int Port { get; init; } = 9300;
++
++    /// <summary>동시에 경합시킬 연결 수입니다. 기본값 8.</summary>
++    public int ConnectionCount { get; init; } = 8;
++
++    /// <summary>연결 하나가 보낼 더하기 횟수입니다. 기본값 1,000.</summary>
++    public int IncrementsPerConnection { get; init; } = 1_000;
++
++    /// <summary>연결 하나가 보낼 빼기 횟수입니다. 기본값 750.</summary>
++    public int DecrementsPerConnection { get; init; } = 750;
++
++    /// <summary>실행 전체에 적용되는 기한입니다. 초과하면 <see cref="TimeoutException"/>과 함께 모든 연결을 정리합니다.</summary>
++    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
++
++    /// <summary>설정값의 유효성을 검사합니다.</summary>
++    /// <exception cref="ArgumentOutOfRangeException">값이 유효 범위를 벗어났을 때.</exception>
++    /// <remarks><b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 정상 경로 무할당.</remarks>
++    public void Validate()
++    {
++        ArgumentException.ThrowIfNullOrEmpty(Host);
++        ArgumentOutOfRangeException.ThrowIfLessThan(Port, 1);
++        ArgumentOutOfRangeException.ThrowIfGreaterThan(Port, 65535);
++        ArgumentOutOfRangeException.ThrowIfLessThan(ConnectionCount, 1);
++        ArgumentOutOfRangeException.ThrowIfNegative(IncrementsPerConnection);
++        ArgumentOutOfRangeException.ThrowIfNegative(DecrementsPerConnection);
++        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(
++            IncrementsPerConnection + DecrementsPerConnection, 0, "IncrementsPerConnection + DecrementsPerConnection");
++        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(Timeout, TimeSpan.Zero);
++    }
++}
++
++/// <summary>
++/// <see cref="CounterScenario.RunAsync"/>의 검증 결과입니다.
++/// </summary>
++/// <remarks>
++/// <b>[Thread Safety]</b> 불변(생성 후 변경 없음) → Thread-safe. <b>[Memory]</b> 인스턴스 1회 할당.
++/// <br/><see cref="Passed"/>가 <see langword="false"/>면 값 불일치입니다. 통신 오류·타임아웃은 결과가 아니라
++/// 예외로 표면화되므로, 결과 객체를 받았다는 것 자체가 "통신은 끝까지 성공했다"는 뜻입니다.
++/// </remarks>
++public sealed class CounterScenarioResult
++{
++    /// <summary>최종값과 적용 연산 수가 <b>둘 다</b> 기대값과 일치하면 <see langword="true"/>입니다.</summary>
++    public required bool Passed { get; init; }
++
++    /// <summary>기대 카운터 값 = 연결 수 × (더하기 − 빼기)입니다.</summary>
++    public required long ExpectedValue { get; init; }
++
++    /// <summary>정지 상태 최종 조회로 얻은 실제 카운터 값입니다.</summary>
++    public required long ActualValue { get; init; }
++
++    /// <summary>기대 적용 연산 수 = 연결 수 × (더하기 + 빼기)입니다.</summary>
++    public required long ExpectedAppliedOps { get; init; }
++
++    /// <summary>정지 상태 최종 조회로 얻은 실제 적용 연산 수입니다.</summary>
++    public required long ActualAppliedOps { get; init; }
++
++    /// <summary>증감 시작 전에 조회한 기준 스냅샷입니다. 새로 시작한 서버라면 <c>(0, 0)</c>이어야 합니다.</summary>
++    public required CounterSnapshot InitialSnapshot { get; init; }
++
++    /// <summary>연결 수립부터 최종 조회까지의 실행 시간입니다.</summary>
++    public required TimeSpan Elapsed { get; init; }
++}
++
++/// <summary>
++/// 서버의 공유 카운터를 여러 연결이 <b>동시에</b> 증감시켜 경합을 실제로 유발하고,
++/// 모든 처리가 끝난 정지 상태에서 최종값이 결정적 기대값과 일치하는지 검증하는 실행기입니다.
++/// </summary>
++/// <remarks>
++/// <b>[이 클래스가 존재하는 이유]</b><br/>
++/// <c>CounterClient/Program.cs</c>(수동 콘솔 데모)와 <c>CounterExample.Tests</c>(E2E 자동 검증)가
++/// <b>같은 알고리즘</b>을 실행하도록 하기 위함입니다. 테스트가 시나리오를 복제하면 예제와 테스트가 갈라져
++/// "테스트는 통과하는데 예제는 틀린" 상태가 생깁니다.
++/// <br/><br/>
++/// <b>[검증 절차 — 순서가 곧 정확성]</b>
++/// <list type="number">
++/// <item><description>연결 N개를 만들고 <b>전부 연결될 때까지</b> 기다립니다.</description></item>
++/// <item><description>공통 시작 신호를 해제해 모든 연결이 <b>동시에</b> 증감을 쏟아붓게 합니다(경합 유발).</description></item>
++/// <item><description>각 연결은 자신의 <b>마지막 증감 직후</b> 조회를 보내고 응답을 기다립니다.
++/// 서버 수신 루프가 <b>같은 세션</b>의 패킷을 순차 <c>await</c>로 처리하므로, 이 응답은
++/// <b>그 연결의 모든 증감이 이미 적용되었다</b>는 확인(배리어)입니다.</description></item>
++/// <item><description><b>모든</b> 연결의 확인 응답을 받은 뒤에야 최종 조회를 1회 더 보냅니다. 이때가 정지 상태입니다.</description></item>
++/// <item><description>최종 <c>Value</c>·<c>AppliedOps</c>를 기대값과 비교합니다.</description></item>
++/// </list>
++/// <b>송신 완료만 기다리고 바로 조회하거나, 중간 조회 응답 중 마지막 도착값을 최종값으로 쓰면 안 됩니다</b> —
++/// 다른 연결의 처리가 아직 남아 있을 수 있고, 조회 응답은 그 시점의 값일 뿐입니다.
++/// <br/><br/>
++/// <b>[성능 및 동시성 제약 조건]</b>
++/// <list type="bullet">
++/// <item><description><b>Thread Safety:</b> <see cref="RunAsync"/>는 자체 연결·상태를 생성하므로 여러 번 동시에 호출해도
++/// 서로 간섭하지 않습니다. 다만 <b>같은 서버</b>를 대상으로 동시에 실행하면 카운터를 공유하므로 기대값이 깨집니다
++/// (검증 실행은 서버당 1회).</description></item>
++/// <item><description><b>Memory Allocation:</b> 연결·Task·대기자·스케줄 배열의 <b>초기 할당은 허용</b>합니다.
++/// 실행 중 hot loop(수천 회 증감 송신)는 미리 직렬화해 둔 프레임을 재사용해 <b>패킷당 직렬화 할당이 0</b>입니다.
++/// 전체 실행에 무할당을 선언하지는 않습니다.</description></item>
++/// <item><description><b>Blocking:</b> 완전 비동기(Non-blocking). 어떤 경로에서도 스레드를 동기 블로킹하지 않습니다.</description></item>
++/// <item><description><b>실행 전제:</b> <b>새로 시작한 서버</b>에 대해 <b>단일 실행</b>. 카운터는 프로세스 수명 동안 누적되므로
++/// 재검증하려면 서버를 재시작해야 합니다.</description></item>
++/// </list>
++/// </remarks>
++public static class CounterScenario
++{
++    // BinaryPacketSerializer: 무상태(stateless) → Thread-safe. 아래 프레임 상수를 만들 때 1회만 쓰이며,
++    // static 필드 초기화는 텍스트 순서로 실행되므로 프레임보다 먼저 선언해야 한다.
++    private static readonly BinaryPacketSerializer Serializer = new();
++
++    // 미리 직렬화한 고정 프레임(각 4B = 헤더만, 본문 0B).
++    // ReadOnlyMemory<byte>로 노출하는 이유: IClientConnection.SendAsync는 ReadOnlyMemory<byte>를 받으며
++    // 전달 시 배열 복사가 아닌 "포인터+길이" 뷰만 넘어가므로(zero-copy) 송신마다 버퍼를 새로 만들 필요가 없다.
++    // static readonly + 생성 후 절대 변경하지 않음 → 여러 연결 Task가 동시에 읽어도 안전(불변 공유).
++    // 매번 PacketSendExtensions.SendAsync<T>를 쓰면 송신마다 ArrayPool Rent/Return + Serialize가 반복되는데,
++    // 본문이 없는 고정 프레임은 결과가 항상 동일하므로 1회 직렬화 후 재사용하는 편이 hot loop에서 명백히 유리하다.
++    private static readonly ReadOnlyMemory<byte> IncrementFrame = CreateFrame(new IncrementPacket());
++    private static readonly ReadOnlyMemory<byte> DecrementFrame = CreateFrame(new DecrementPacket());
++    private static readonly ReadOnlyMemory<byte> QueryFrame = CreateFrame(new CounterQueryPacket());
++
++    /// <summary>
++    /// 시나리오를 실행하고 검증 결과를 반환합니다.
++    /// </summary>
++    /// <param name="options">연결 수·증감 횟수·대상 주소·전체 기한 설정입니다.</param>
++    /// <param name="cancellationToken">호출자 취소 토큰입니다.</param>
++    /// <returns>기대값과 실측값, PASS/FAIL 판정이 담긴 결과입니다.</returns>
++    /// <exception cref="ArgumentNullException"><paramref name="options"/>가 <see langword="null"/>일 때.</exception>
++    /// <exception cref="ArgumentOutOfRangeException"><paramref name="options"/>의 값이 유효 범위를 벗어날 때.</exception>
++    /// <exception cref="TimeoutException"><see cref="CounterScenarioOptions.Timeout"/> 안에 완료하지 못했을 때.
++    /// 던지기 전에 모든 연결을 정리합니다.</exception>
++    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/>이 취소됐을 때.</exception>
++    /// <exception cref="IOException">조회 대기 중 연결이 끊겼거나 서버 응답이 프로토콜에 맞지 않을 때.</exception>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> 호출마다 독립된 연결·상태를 사용합니다(위 클래스 <c>remarks</c>의 단서 참조).
++    /// <br/><b>[Blocking]</b> Non-blocking(완전 비동기).
++    /// <br/><b>[Memory]</b> 연결 수·전체 연산 수에 비례하는 초기 할당이 발생하고, 증감 송신 루프는 프레임 재사용으로 직렬화 무할당입니다.
++    /// <br/><b>[실패 시 정리]</b> 예외·타임아웃 어느 경로에서도 <c>finally</c>에서 <b>모든</b> 연결을 <c>DisposeAsync</c>합니다.
++    /// 실패로 중단된 작업은 취소 토큰으로 실제 종료시키며, 대기만 포기하고 작업을 남기지 않습니다.
++    /// <br/><b>[검증 결과]</b> 값 불일치는 <c>Passed == false</c>로 반환하고, 통신 오류·타임아웃은 예외로 표면화합니다.
++    /// 어느 쪽이든 호출자가 PASS로 오인할 수 없습니다.
++    /// </remarks>
++    public static async Task<CounterScenarioResult> RunAsync(
++        CounterScenarioOptions options,
++        CancellationToken cancellationToken = default)
++    {
++        ArgumentNullException.ThrowIfNull(options);
++        options.Validate();
++
++        int opsPerConnection = checked(options.IncrementsPerConnection + options.DecrementsPerConnection);
++
++        // checked: 설정값이 커지면 기대값 계산이 조용히 오버플로해 "틀린 기대값과 일치"하는 최악의 오검증이 생긴다.
++        // 상수 폴딩이 아니라 런타임 설정값의 곱셈이므로 checked가 실제로 의미를 갖는다.
++        long expectedValue = checked((long)options.ConnectionCount * (options.IncrementsPerConnection - options.DecrementsPerConnection));
++        long expectedAppliedOps = checked((long)options.ConnectionCount * opsPerConnection);
++
++        // 증감 순서 스케줄(true=빼기). 연결마다 시작 위치를 회전시켜 서로 다른 순서로 유입되게 한다.
++        // bool[]: 생성 후 절대 변경하지 않으므로 모든 연결 Task가 락 없이 동시에 읽어도 안전(불변 공유 데이터).
++        // 연산마다 분기 계산을 다시 하지 않고 배열을 미리 만드는 이유는 hot loop에서 나눗셈을 없애기 위함이다.
++        bool[] schedule = BuildSchedule(options.IncrementsPerConnection, options.DecrementsPerConnection);
++
++        // CancellationTokenSource.CreateLinkedTokenSource: 호출자 취소와 전체 기한을 하나의 토큰으로 합류시킨다.
++        // 두 실패원(사용자 취소·시한 만료)을 한 토큰으로 수렴시키면 정리 경로가 하나로 고정되어
++        // "대기만 포기하고 작업은 계속 도는" 좀비 Task가 생기지 않는다.
++        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
++        deadlineCts.CancelAfter(options.Timeout); // 내부 Timer 1개 무장 — 완료 시 Dispose에서 해제된다
++        CancellationToken ct = deadlineCts.Token;
++
++        var connections = new CounterConnection[options.ConnectionCount];
++        var stopwatch = Stopwatch.StartNew();
++
++        try
++        {
++            // ── 1. 연결 수립 ──────────────────────────────────────────────────
++            for (int i = 0; i < connections.Length; i++)
++            {
++                connections[i] = new CounterConnection();
++                await connections[i].ConnectAsync(options.Host, options.Port, ct).ConfigureAwait(false);
++            }
++
++            // 시작 전 기준값 조회. 새 서버라면 (0, 0)이어야 한다.
++            // 이 조회는 증감이 아니므로 AppliedOps를 늘리지 않는다.
++            CounterSnapshot initial = await connections[0].QueryAsync(ct).ConfigureAwait(false);
++
++            // ── 2. 공통 시작 신호 ─────────────────────────────────────────────
++            //
++            // TaskCompletionSource<bool>: 모든 워커가 이 하나의 Task를 await하다가 동시에 풀려나는 출발 게이트.
++            // RunContinuationsAsynchronously: TrySetResult 호출 스레드에서 N개 워커의 후속 작업이 인라인 직렬 실행되는 것을 막는다.
++            //   → 워커들이 실제로 스레드 풀에 흩어져 병렬 출발하므로 경합이 만들어진다(이 옵션이 없으면 사실상 순차 출발).
++            var startSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
++
++            var workers = new Task[connections.Length];
++            for (int i = 0; i < connections.Length; i++)
++                workers[i] = RunConnectionAsync(connections[i], i, connections.Length, schedule, startSignal.Task, ct);
++
++            startSignal.TrySetResult(true);
++
++            // ── 3. 배리어 — 전 연결의 확인 응답 수신 ──────────────────────────
++            //
++            // Task.WhenAll: 개별 Task의 예외를 자신의 AggregateException으로 흡수하므로,
++            // 여기서 await하면 실패한 작업 전부가 "관측됨"이 되어 미관측 Task 예외로 프로세스에 남지 않는다.
++            await ThrowIfDeadlineAsync(Task.WhenAll(workers), deadlineCts, cancellationToken, options.Timeout).ConfigureAwait(false);
++
++            // ── 4. 정지 상태에서 최종 조회 ────────────────────────────────────
++            //
++            // 이 시점에는 모든 연결이 "내 증감은 전부 적용됐다"는 확인을 이미 받았다.
++            // 따라서 서버에 미처리 증감이 남아 있지 않고(정지 상태), Value·AppliedOps 쌍을 함께 단언해도 된다.
++            CounterSnapshot fin = await connections[0].QueryAsync(ct).ConfigureAwait(false);
++            stopwatch.Stop();
++
++            return new CounterScenarioResult
++            {
++                Passed = fin.Value == expectedValue && fin.AppliedOps == expectedAppliedOps,
++                ExpectedValue = expectedValue,
++                ActualValue = fin.Value,
++                ExpectedAppliedOps = expectedAppliedOps,
++                ActualAppliedOps = fin.AppliedOps,
++                InitialSnapshot = initial,
++                Elapsed = stopwatch.Elapsed,
++            };
++        }
++        catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
++        {
++            // 시한 만료를 호출자 취소와 구분해 표면화한다. 정리는 아래 finally가 수행한다.
++            throw new TimeoutException(
++                $"경합 카운터 시나리오가 기한({options.Timeout}) 안에 완료되지 않았습니다. 서버가 응답하지 않거나 처리가 지연되고 있습니다.");
++        }
++        finally
++        {
++            // 부분 초기화 실패를 포함해 이미 만든 연결은 모두 정리한다.
++            // deadlineCts는 이 시점에 이미 취소됐거나 곧 Dispose되므로, 진행 중이던 송신·대기도 함께 풀린다.
++            foreach (CounterConnection? conn in connections)
++            {
++                if (conn is null) continue;
++                try { await conn.DisposeAsync().ConfigureAwait(false); }
++                catch { /* 정리 중 오류는 원래 실패 원인을 가리지 않도록 무시 */ }
++            }
++        }
++    }
++
++    /// <summary>한 연결이 담당하는 증감 송신과, 마지막 증감 직후의 완료 확인 조회를 수행합니다.</summary>
++    /// <remarks>
++    /// <b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 증감 송신은 미리 직렬화된 프레임을 재사용해 직렬화 할당이 없습니다.
++    /// <br/>연결 안에서는 송신을 순차 <c>await</c>합니다 — 같은 연결의 순서를 보장해야 "마지막 증감 뒤 조회"가
++    /// 완료 확인으로서 성립하기 때문입니다. 병렬성은 <b>연결 사이</b>에서 나옵니다.
++    /// </remarks>
++    private static async Task RunConnectionAsync(
++        CounterConnection connection,
++        int index,
++        int connectionCount,
++        bool[] schedule,
++        Task startSignal,
++        CancellationToken cancellationToken)
++    {
++        await startSignal.ConfigureAwait(false); // 공통 출발 게이트
++
++        int total = schedule.Length;
++        // 연결별 시작 위치를 균등하게 흩어 같은 순간에 서로 다른 종류의 명령이 유입되게 한다.
++        // 회전은 항목 수를 바꾸지 않으므로 연결마다 더하기·빼기 횟수는 동일하게 유지된다.
++        int offset = (int)((long)index * total / connectionCount);
++
++        for (int k = 0; k < total; k++)
++        {
++            int slot = offset + k;
++            if (slot >= total) slot -= total; // 나머지 연산 대신 뺄셈 — hot loop의 div를 피한다
++            await connection.SendFrameAsync(schedule[slot] ? DecrementFrame : IncrementFrame, cancellationToken).ConfigureAwait(false);
++        }
++
++        // 마지막 증감 뒤 조회 → 응답 수신 = 이 연결의 모든 증감이 서버에 적용 완료됐다는 확인.
++        // 반환값(중간 스냅샷)은 판정에 쓰지 않는다. 다른 연결이 아직 처리 중일 수 있기 때문이다.
++        _ = await connection.QueryAsync(cancellationToken).ConfigureAwait(false);
++    }
++
++    /// <summary>
++    /// 증감 순서 스케줄을 만듭니다. <see langword="true"/>는 빼기, <see langword="false"/>는 더하기입니다.
++    /// </summary>
++    /// <param name="increments">더하기 횟수입니다.</param>
++    /// <param name="decrements">빼기 횟수입니다.</param>
++    /// <returns>길이 <c>increments + decrements</c>이고 <see langword="true"/>가 정확히 <paramref name="decrements"/>개인 배열입니다.</returns>
++    /// <remarks>
++    /// 앞쪽에 더하기를 몰고 뒤쪽에 빼기를 모으면 중간 시점의 카운터가 단조 증가·감소만 하여 경합 양상이 단조로워집니다.
++    /// Bresenham 방식으로 빼기를 전 구간에 균등 분산해 증감이 실제로 뒤섞이게 합니다.
++    /// <br/><b>[Memory]</b> 길이 <c>increments+decrements</c>의 <c>bool[]</c> 1회 할당(실행당 1개, 전 연결이 공유).
++    /// <b>[Blocking]</b> Non-blocking.
++    /// </remarks>
++    private static bool[] BuildSchedule(int increments, int decrements)
++    {
++        int total = checked(increments + decrements);
++        var schedule = new bool[total];
++        if (decrements == 0) return schedule;
++
++        long emitted = 0;
++        for (int k = 0; k < total; k++)
++        {
++            // floor((k+1)*dec/total)이 증가하는 지점에서만 빼기를 낸다 → 정확히 dec개가 균등 분포한다.
++            long next = (long)(k + 1) * decrements / total;
++            if (next > emitted)
++            {
++                schedule[k] = true;
++                emitted = next;
++            }
++        }
++        return schedule;
++    }
++
++    /// <summary>본문 없는 고정 패킷을 1회 직렬화해 재사용 가능한 프레임 배열로 만듭니다.</summary>
++    /// <remarks><b>[Memory]</b> 타입당 배열 1개(정적 초기화 시 1회). <b>[Blocking]</b> Non-blocking.</remarks>
++    private static byte[] CreateFrame<T>(T packet) where T : IPacket
++    {
++        // 정확한 크기의 배열: 정적 수명이라 ArrayPool 대여가 무의미하고(반납하지 않음),
++        // Rent는 요청보다 큰 버킷 크기를 줄 수 있어 "배열 전체 = 프레임"이라는 단순한 불변식이 깨진다.
++        var buffer = new byte[PacketPool.HeaderSize + packet.GetBodySize()];
++        Serializer.Serialize(packet, buffer);
++        return buffer;
++    }
++
++    /// <summary>대기 중 시한이 만료되면 <see cref="TimeoutException"/>으로 변환합니다.</summary>
++    private static async Task ThrowIfDeadlineAsync(
++        Task work, CancellationTokenSource deadlineCts, CancellationToken callerToken, TimeSpan timeout)
++    {
++        try
++        {
++            await work.ConfigureAwait(false);
++        }
++        catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !callerToken.IsCancellationRequested)
++        {
++            throw new TimeoutException(
++                $"경합 카운터 시나리오가 기한({timeout}) 안에 완료되지 않았습니다. 서버가 응답하지 않거나 처리가 지연되고 있습니다.");
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 연결 1개 = 워커 1개. 미완료 조회를 최대 1건으로 제한해 요청 ID 없이 응답을 매칭한다.
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 시나리오가 사용하는 연결 1개를 감쌉니다. 증감 프레임 송신과 "미완료 1건" 조회 왕복을 제공합니다.
++    /// </summary>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> 워커 Task 1개가 단독으로 사용하는 것을 전제로 합니다(송신 순서가 곧 정확성이므로).
++    /// 다만 <see cref="_pendingQuery"/>만은 IO 스레드(수신·연결 해제 콜백)와 워커 스레드가 함께 접근하므로
++    /// <see cref="Interlocked"/>로 소유권을 옮깁니다.
++    /// <br/><b>[Blocking]</b> 모든 멤버 Non-blocking.
++    /// </remarks>
++    private sealed class CounterConnection : IAsyncDisposable
++    {
++        // ServerNet.CreateClient(): SocketPipelineClient(internal)를 IClientConnection으로 반환.
++        // 구현체가 숨겨져 있어 예제는 인터페이스만 다룬다(캡슐화). ConnectAsync 전까지 소켓이 만들어지지 않는다.
++        private readonly IClientConnection _connection = ServerNet.CreateClient();
++
++        // 현재 미완료 조회의 대기자. IO 스레드(OnReceived/OnDisconnected)와 워커 스레드가 동시에 접근하므로
++        // 참조 자체를 Interlocked.Exchange/CompareExchange로 주고받아 "한 쪽만 완료시킨다"는 소유권을 보장한다.
++        // TaskCompletionSource<T>는 TrySetResult/TrySetException이 스레드 안전하지만, 대기자를 '꺼내 가는' 행위까지
++        // 원자적이어야 응답과 연결 해제가 동시에 도착했을 때 두 번 처리되지 않는다.
++        private TaskCompletionSource<CounterSnapshot>? _pendingQuery;
++
++        // BinaryPacketSerializer: 무상태 → 여러 연결이 공유해도 안전. 응답 역직렬화에만 쓴다.
++        private static readonly BinaryPacketSerializer ResponseSerializer = new();
++
++        /// <summary>서버에 연결하고 수신 콜백을 활성화합니다.</summary>
++        /// <remarks><b>[Blocking]</b> Non-blocking(비동기 대기). 콜백은 <c>ConnectAsync</c> 전에 등록해야 합니다.</remarks>
++        public async Task ConnectAsync(string host, int port, CancellationToken cancellationToken)
++        {
++            // OnReceived: IO 스레드에서 호출된다. data는 콜백 반환 후 무효가 되는 수신 버퍼 뷰이므로
++            // 동기 구간에서 검증·역직렬화만 하고, 밖으로는 값 타입 스냅샷만 넘긴다.
++            // 이 콜백에서 예외를 던지면 클라이언트 수신 루프가 죽어 실패 원인이 뒤섞이므로,
++            // 프로토콜 위반은 예외를 '던지는' 대신 대기자에 '전달'한다.
++            _connection.OnReceived = data =>
++            {
++                TaskCompletionSource<CounterSnapshot>? waiter = Interlocked.Exchange(ref _pendingQuery, null);
++                if (waiter is null)
++                    return ValueTask.CompletedTask; // 대기자가 없는 응답(중복·지연 도착)은 조용히 버린다
++
++                ReadOnlySpan<byte> frame = data.Span; // zero-copy 뷰
++                if (!PacketPool.TryParseHeader(frame, out ushort packetId, out int bodyLength)
++                    || packetId != CounterValuePacket.Id
++                    || bodyLength != CounterValuePacket.BodySize
++                    || frame.Length != PacketPool.HeaderSize + CounterValuePacket.BodySize)
++                {
++                    waiter.TrySetException(new IOException(
++                        $"조회 응답이 프로토콜에 맞지 않습니다: Id={(frame.Length >= PacketPool.HeaderSize ? packetId : -1)}, " +
++                        $"본문 {(frame.Length >= PacketPool.HeaderSize ? bodyLength : -1)}B, 프레임 {frame.Length}B " +
++                        $"(기대: Id={CounterValuePacket.Id}, 본문 {CounterValuePacket.BodySize}B)"));
++                    return ValueTask.CompletedTask;
++                }
++
++                // Deserialize<CounterValuePacket>: struct라 new T()가 스택/인라인 생성 → 힙 할당 0.
++                CounterValuePacket packet = ResponseSerializer.Deserialize<CounterValuePacket>(frame);
++                waiter.TrySetResult(new CounterSnapshot(packet.Value, packet.AppliedOps));
++                return ValueTask.CompletedTask;
++            };
++
++            // OnDisconnected: 조회 대기 중 연결이 끊기면 대기자를 즉시 실패시킨다.
++            // 이 배선이 없으면 "서버 종료" 실패 경로가 전체 기한이 만료될 때까지 매달려 있게 되어,
++            // 원인이 '연결 끊김'인지 '무응답'인지 구분되지 않고 실행 시간만 늘어난다.
++            _connection.OnDisconnected = () =>
++            {
++                Interlocked.Exchange(ref _pendingQuery, null)
++                    ?.TrySetException(new IOException("조회 응답을 기다리는 중에 서버 연결이 끊겼습니다."));
++                return ValueTask.CompletedTask;
++            };
++
++            // ConnectAsync: TCP 3-way handshake + 수신 파이프라인 시작. 완료 후 IsConnected == true.
++            await _connection.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
++        }
++
++        /// <summary>미리 직렬화된 프레임을 그대로 송신합니다(증감 hot loop 전용).</summary>
++        /// <remarks>
++        /// <b>[Memory]</b> 직렬화·버퍼 대여가 없습니다 — 정적 프레임 뷰를 넘길 뿐이라 송신당 할당이 0입니다
++        /// (커널 송신 버퍼 포화로 비동기 전환될 때만 ServerLib 내부 상태머신이 생깁니다).
++        /// <b>[Blocking]</b> Non-blocking.
++        /// </remarks>
++        public ValueTask SendFrameAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
++            // IClientConnection.SendAsync(ReadOnlyMemory<byte>): _socket.SendAsync()로 커널 송신 버퍼에 직접 기록한다.
++            // 커널 버퍼에 여유가 있으면 동기 완료(무할당), 포화 시에만 비동기 대기한다(TCP 흐름 제어).
++            => _connection.SendAsync(frame, cancellationToken);
++
++        /// <summary>조회를 1건 보내고 응답 스냅샷을 기다립니다. 연결당 미완료 조회는 1건으로 제한됩니다.</summary>
++        /// <exception cref="InvalidOperationException">이전 조회가 아직 끝나지 않았을 때(요청 ID 없는 매칭 전제 위반).</exception>
++        /// <exception cref="IOException">연결이 끊겼거나 응답이 프로토콜에 맞지 않을 때.</exception>
++        /// <exception cref="OperationCanceledException">토큰이 취소됐을 때.</exception>
++        /// <remarks>
++        /// <b>[순서]</b> 대기자를 <b>송신 전에</b> 게시합니다. 송신 후에 게시하면 루프백처럼 빠른 경로에서
++        /// 응답이 먼저 도착해 대기자를 놓칠 수 있습니다.
++        /// <br/><b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 조회 1회당 TaskCompletionSource 1개.
++        /// </remarks>
++        public async Task<CounterSnapshot> QueryAsync(CancellationToken cancellationToken)
++        {
++            // RunContinuationsAsynchronously: TrySetResult를 호출하는 IO 스레드에서 대기자의 후속 코드가
++            // 인라인 실행되면 수신 루프가 그만큼 점유된다. 비동기 재개로 IO 스레드를 즉시 놓아준다.
++            var waiter = new TaskCompletionSource<CounterSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
++
++            // CompareExchange(null → waiter): 미완료 조회가 이미 있으면 게시를 거부한다.
++            if (Interlocked.CompareExchange(ref _pendingQuery, waiter, null) is not null)
++                throw new InvalidOperationException("이 연결에는 이미 미완료 조회가 있습니다. 연결당 동시 조회는 1건입니다.");
++
++            try
++            {
++                await _connection.SendAsync(QueryFrame, cancellationToken).ConfigureAwait(false);
++                return await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
++            }
++            catch
++            {
++                // 송신 실패·취소로 빠져나갈 때 대기자를 회수한다. 회수하지 않으면 이후 도착한 응답이
++                // 죽은 대기자를 완료시키고, 다음 QueryAsync가 "이미 미완료 조회가 있다"로 잘못 거부된다.
++                // 값 비교로 교체 — 그 사이 IO 스레드가 이미 가져갔다면 건드리지 않는다(ABA 없이 소유권 존중).
++                Interlocked.CompareExchange(ref _pendingQuery, null, waiter);
++                throw;
++            }
++        }
++
++        /// <summary>연결을 정리합니다. 대기 중인 조회가 있으면 실패시킵니다.</summary>
++        /// <remarks><b>[Blocking]</b> Non-blocking. 소켓·수신 파이프라인 자원을 해제합니다.</remarks>
++        public async ValueTask DisposeAsync()
++        {
++            Interlocked.Exchange(ref _pendingQuery, null)
++                ?.TrySetException(new IOException("조회 응답을 기다리는 중에 연결이 정리되었습니다."));
++            // DisposeAsync: CTS 취소 + 소켓 폐기로 수신 루프에 종료를 알린다(await using과 동일 경로).
++            await _connection.DisposeAsync().ConfigureAwait(false);
++        }
++    }
++}
+diff --git a/CounterClient/Program.cs b/CounterClient/Program.cs
+new file mode 100644
+index 0000000..bb11497
+--- /dev/null
++++ b/CounterClient/Program.cs
+@@ -0,0 +1,100 @@
++// =============================================================================
++// CounterClient — 경합(contention) 시연용 다중 연결 카운터 클라이언트 예제
++// =============================================================================
++// 동작: 127.0.0.1:9300의 CounterServer에 연결 8개를 만들고, 모두 동시에 출발시켜
++//       연결당 더하기 1,000회 · 빼기 750회를 뒤섞어 보냅니다(= 경합 유발).
++//       모든 연결이 "내 명령은 전부 처리됐다"는 확인을 받은 뒤(배리어) 최종 조회 1회를 보내고,
++//       최종값이 결정적 기대값과 일치하는지 판정해 PASS/FAIL과 종료 코드를 출력합니다.
++//
++// 기대값:
++//   Value      = 8 × (1,000 − 750) = 2,000        ← 순(net) 증감 결과
++//   AppliedOps = 8 × (1,000 + 750) = 14,000       ← 서버가 실제로 적용한 연산 수
++//   AppliedOps를 함께 보는 이유: Value만 보면 "더하기 N + 빼기 N"과 "아무것도 처리 안 함"이
++//   똑같이 0으로 보여, 상쇄가 결함을 가려 버립니다.
++//
++// 학습 포인트:
++//   8개 연결이 같은 메모리를 마구 갱신해도(=경합), 서버가 Interlocked 원자 연산으로 갱신하면
++//   최종값이 항상 정확히 2,000입니다. 경합을 없앤 게 아니라, 경합 하에서 정확한 것입니다.
++//
++// 실행법:
++//   dotnet run --project CounterServer      (먼저 실행, 별도 터미널)
++//   dotnet run --project CounterClient
++//
++// ※ 검증은 "새로 시작한 서버 + 클라이언트 1회 실행"을 전제로 합니다.
++//   카운터는 서버 프로세스 수명 동안 누적되므로, 다시 검증하려면 서버를 재시작하십시오.
++//
++// 종료 코드: 0 = PASS, 1 = 값 불일치(FAIL), 2 = 통신 오류·타임아웃
++// =============================================================================
++
++using CounterClient;
++
++// ── 학습용 설정 상수 ─────────────────────────────────────────────────────────
++//
++// 값을 바꿔 가며 경합 강도를 조절해 볼 수 있습니다. 어떤 조합이든 최종값은
++// ConnectionCount × (Increments − Decrements)로 결정적이어야 합니다.
++// Timeout: 루프백에서 14,000회 왕복은 보통 수 초 안에 끝나지만, CI·부하 상황의 스케줄링 지연을
++//   감안해 넉넉히 30초로 둡니다. 무응답 시 매달리지 않고 정리 후 종료하기 위한 상한입니다.
++var options = new CounterScenarioOptions
++{
++    Host = "127.0.0.1",
++    Port = 9300,
++    ConnectionCount = 8,
++    IncrementsPerConnection = 1_000,
++    DecrementsPerConnection = 750,
++    Timeout = TimeSpan.FromSeconds(30),
++};
++
++Console.WriteLine("경합 카운터 클라이언트 — 다중 연결 동시 증감 검증");
++Console.WriteLine($"  대상       : {options.Host}:{options.Port}");
++Console.WriteLine($"  연결 수    : {options.ConnectionCount}");
++Console.WriteLine($"  연결당 더하기/빼기 : {options.IncrementsPerConnection:N0} / {options.DecrementsPerConnection:N0}");
++Console.WriteLine("───────────────────────────────────────");
++
++try
++{
++    // CounterScenario.RunAsync: 연결 수립 → 공통 시작 신호 → 동시 증감 → 연결별 완료 확인(배리어)
++    //   → 정지 상태 최종 조회 → 판정. Program과 E2E 테스트가 이 실행기를 공유합니다.
++    // 값 불일치는 결과의 Passed=false로, 통신 오류·타임아웃은 예외로 표면화됩니다.
++    CounterScenarioResult result = await CounterScenario.RunAsync(options);
++
++    if (result.InitialSnapshot != default)
++    {
++        Console.WriteLine($"[경고] 시작 시점 카운터가 0이 아닙니다: {result.InitialSnapshot}");
++        Console.WriteLine("       이 서버는 이미 다른 실행을 처리했습니다. 정확한 검증을 위해 서버를 재시작한 뒤 다시 실행하십시오.");
++        Console.WriteLine("───────────────────────────────────────");
++    }
++
++    Console.WriteLine($"  소요 시간   : {result.Elapsed.TotalSeconds:F2}초");
++    Console.WriteLine($"  Value       : 기대 {result.ExpectedValue:N0} / 실제 {result.ActualValue:N0}");
++    Console.WriteLine($"  AppliedOps  : 기대 {result.ExpectedAppliedOps:N0} / 실제 {result.ActualAppliedOps:N0}");
++    Console.WriteLine("───────────────────────────────────────");
++
++    if (result.Passed)
++    {
++        Console.WriteLine("PASS — 8개 연결이 동시에 갱신했지만 최종값이 기대값과 정확히 일치합니다.");
++        Console.WriteLine("       (서버가 Interlocked 원자 연산으로 갱신하므로 갱신 유실이 없습니다)");
++        return 0;
++    }
++
++    Console.WriteLine("FAIL — 최종값이 기대값과 다릅니다.");
++    // 진단 힌트: 두 값이 어긋나는 양상으로 원인을 좁힐 수 있습니다.
++    if (result.ActualAppliedOps != result.ExpectedAppliedOps)
++        Console.WriteLine("       AppliedOps 부족 → 일부 패킷이 서버에 도달·적용되지 않았습니다(전송/연결 문제).");
++    else
++        Console.WriteLine("       AppliedOps는 일치하는데 Value가 틀림 → 갱신 유실(비원자 갱신) 의심.");
++    return 1;
++}
++catch (TimeoutException ex)
++{
++    // 기한 만료: RunAsync가 모든 연결을 정리한 뒤 던진 것입니다. PASS를 출력하지 않습니다.
++    Console.WriteLine($"오류(타임아웃) — {ex.Message}");
++    Console.WriteLine("       CounterServer가 127.0.0.1:9300에서 실행 중인지 확인하십시오.");
++    return 2;
++}
++catch (Exception ex)
++{
++    // 연결 실패·중도 종료·프로토콜 위반 등. 일부 작업이 실패한 뒤 PASS를 출력하는 일은 없습니다.
++    Console.WriteLine($"오류 — {ex.GetType().Name}: {ex.Message}");
++    Console.WriteLine("       CounterServer가 127.0.0.1:9300에서 실행 중인지 확인하십시오.");
++    return 2;
++}
+diff --git a/CounterExample.Tests/CounterEndToEndTests.cs b/CounterExample.Tests/CounterEndToEndTests.cs
+new file mode 100644
+index 0000000..58d212f
+--- /dev/null
++++ b/CounterExample.Tests/CounterEndToEndTests.cs
+@@ -0,0 +1,642 @@
++using System.Diagnostics;
++using System.IO;
++using System.Net;
++using System.Net.Sockets;
++using CounterClient;
++using CounterServer;
++using ServerLib;
++using ServerLib.Core.Memory;
++using ServerLib.Core.Serialization;
++using ServerLib.Core.Serialization.Packets;
++using ServerLib.Interface;
++using Xunit;
++
++namespace CounterExample.Tests;
++
++/// <summary>
++/// 실제 루프백 소켓 위에서 <see cref="CounterHandler"/>(서버)와 <see cref="CounterScenario"/>(클라이언트)를
++/// 그대로 구동해 경합 카운터 예제를 End-to-End 검증합니다.
++/// </summary>
++/// <remarks>
++/// <b>[알고리즘을 복제하지 않는다]</b><br/>
++/// 서버 측은 <c>CounterServer/Program.cs</c>가 쓰는 <b>바로 그</b> <see cref="CounterHandler.HandleAsync"/>를
++/// <c>listener.OnReceived</c>에 연결하고, 클라이언트 측 주 시나리오는 <c>CounterClient/Program.cs</c>가 호출하는
++/// <b>바로 그</b> <see cref="CounterScenario.RunAsync"/>를 호출합니다. 프로토콜 수준의 실패 경로(잘못된 길이·미지 ID)만
++/// 원시 프레임을 직접 조립합니다 — 예제 API로는 만들 수 없는 프레임이기 때문입니다.
++/// <br/><br/>
++/// <b>[테스트 격리]</b> 각 테스트가 <see cref="GetFreePort"/>로 독립 포트를 확보하고,
++/// <see cref="CounterState"/>도 테스트마다 새로 만듭니다(<c>static</c>이 아니므로 서로 오염되지 않습니다).
++/// 서버는 <see cref="IPAddress.Loopback"/> 전용 바인딩으로 외부에 노출되지 않습니다.
++/// <br/><br/>
++/// <b>[검증 한계 — 배리어의 필요성은 증명되지 않는다]</b><br/>
++/// 아래 시나리오 테스트는 "배리어 경로가 기대값을 산출한다"까지만 보장합니다.
++/// 배리어를 제거했을 때의 결함은 <b>비결정적</b> 오값으로만 드러나므로, 그것을 단언하려 하면
++/// flaky 테스트가 됩니다. 배리어의 필요성은 설계 근거(서버 수신 루프의 세션별 순차 처리)로만 성립합니다.
++/// </remarks>
++public class CounterEndToEndTests
++{
++    // BinaryPacketSerializer: 무상태(stateless), Thread-safe → 병렬 테스트가 공유해도 안전.
++    private static readonly BinaryPacketSerializer Serializer = new();
++
++    // ── 타임아웃 상수 ────────────────────────────────────────────────────────
++    // 단순 왕복(연결 1개, 패킷 수 개)은 루프백에서 <1ms지만 CI 스케줄링 지연을 고려해 5초.
++    private const int RoundTripTimeoutMs = 5_000;
++    // 8연결 × 1,750회 = 14,000 패킷 왕복. 단독 실행은 수 초지만, 전체 스위트 병렬 실행 시의
++    // 스레드 풀 경합까지 감안해 30초 상한을 둔다(실측 기반: 아래 시나리오 테스트가 Elapsed를 출력).
++    private const int ScenarioTimeoutSeconds = 30;
++    // 무응답 서버 테스트 전용 짧은 기한. 이 값을 넘겨 실제로 TimeoutException이 나는지 본다.
++    private const int UnresponsiveTimeoutMs = 1_000;
++    // 기한 만료 후 정리까지 포함해 RunAsync가 반드시 반환해야 하는 상한(테스트가 매달리지 않게 하는 안전망).
++    private const int UnresponsiveObserveMarginMs = 15_000;
++
++    // ── 기본 시나리오 규모 상수 ──────────────────────────────────────────────
++    private const int ScenarioConnections = 8;
++    private const int ScenarioIncrements = 1_000;
++    private const int ScenarioDecrements = 750;
++    // 총 연산 0 시나리오: 더하기 = 빼기. Value는 0이지만 AppliedOps는 2배로 쌓여야 한다.
++    private const int BalancedConnections = 4;
++    private const int BalancedOpsEachWay = 500;
++    // 단일 연결 시나리오.
++    private const int SingleConnectionIncrements = 5;
++    private const int SingleConnectionDecrements = 2;
++    // 미지 패킷 ID. 기존 사용 ID(1~19)와 하트비트 예약 ID(0xFFFE/0xFFFF)를 모두 피한다.
++    // 서버는 정상 PING(0xFFFE)만 하트비트로 가로채므로 그 외 ID는 앱 경로(CounterHandler)에 도달한다.
++    private const ushort UnknownPacketId = 250;
++
++    /// <summary>OS에서 임시 포트를 확보해 반환합니다.</summary>
++    /// <remarks>
++    /// <see cref="TcpListener"/>(Loopback, 0): 포트 0으로 바인딩하면 커널 TCP/IP 스택이 미사용 임시 포트를 배정합니다.
++    /// Stop() 이후 실제 바인딩까지 짧은 TOCTOU 창이 있으나, 루프백 전용 테스트에서는 탈취 가능성이 극히 낮습니다.
++    /// </remarks>
++    private static int GetFreePort()
++    {
++        var probe = new TcpListener(IPAddress.Loopback, 0);
++        probe.Start();
++        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
++        probe.Stop();
++        return port;
++    }
++
++    /// <summary>
++    /// <c>CounterServer/Program.cs</c>와 동일한 와이어링(실제 <see cref="CounterHandler"/>)으로 리스너를 시작합니다.
++    /// </summary>
++    /// <param name="port">바인딩할 포트입니다.</param>
++    /// <param name="state">이 리스너가 사용할 공유 카운터입니다.</param>
++    /// <param name="sessionFaulted">
++    /// 프로토콜 위반 등으로 세션이 오류 종료될 때 완료되는 신호입니다.
++    /// 실패 경로 테스트가 "서버가 실제로 그 패킷을 처리(=거부)한 뒤" 상태를 단언하도록 하는 배리어입니다.
++    /// </param>
++    /// <remarks>호출자는 반드시 <c>finally</c>에서 <see cref="IServerListener.Stop"/>을 호출해야 합니다.</remarks>
++    private static IServerListener StartCounterListener(
++        int port, CounterState state, out Task<Exception> sessionFaulted)
++    {
++        // TaskCompletionSource<Exception>: IO 스레드(OnClientError 콜백)에서 발생한 예외를 테스트 스레드로 전달하는 신호기.
++        // RunContinuationsAsynchronously: SetResult 시 대기자가 IO 스레드에서 인라인 실행되지 않게 해 수신 루프 점유를 막는다.
++        var faulted = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
++        sessionFaulted = faulted.Task;
++
++        IServerListener listener = ServerNet.CreateListener();
++        var handler = new CounterHandler(state);
++
++        // CounterServer/Program.cs와 동일: 핸들러 메서드를 그대로 콜백으로 사용한다.
++        listener.OnReceived = handler.HandleAsync;
++        listener.OnClientError = (ISession _, Exception ex) =>
++        {
++            faulted.TrySetResult(ex);
++            return ValueTask.CompletedTask;
++        };
++
++        // Start(port, IPAddress.Loopback): 루프백 전용 바인딩. accept 루프를 백그라운드 Task로 시작(Non-blocking).
++        listener.Start(port, IPAddress.Loopback);
++        return listener;
++    }
++
++    /// <summary>지정 설정으로 <see cref="CounterScenario.RunAsync"/>를 실행할 옵션을 만듭니다.</summary>
++    private static CounterScenarioOptions OptionsFor(int port, int connections, int increments, int decrements)
++        => new()
++        {
++            Host = "127.0.0.1",
++            Port = port,
++            ConnectionCount = connections,
++            IncrementsPerConnection = increments,
++            DecrementsPerConnection = decrements,
++            Timeout = TimeSpan.FromSeconds(ScenarioTimeoutSeconds),
++        };
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 1 — 새 서버의 초기 조회는 (0, 0)
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>증감을 보내기 전에 조회하면 <c>Value=0, AppliedOps=0</c>이 회신되는지 검증합니다.</summary>
++    /// <remarks>조회 요청 자체는 증감이 아니므로 <c>AppliedOps</c>를 늘리지 않아야 합니다.</remarks>
++    [Fact]
++    public async Task Query_OnFreshServer_ReturnsZeroValueAndZeroAppliedOps()
++    {
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out _);
++
++        try
++        {
++            await using var client = new RawCounterClient();
++            await client.ConnectAsync(port);
++
++            CounterSnapshot snapshot = await client.QueryAsync();
++
++            Assert.Equal(0L, snapshot.Value);
++            Assert.Equal(0L, snapshot.AppliedOps);
++            // 조회를 한 번 더 해도 AppliedOps가 늘지 않아야 한다(조회는 증감이 아니다).
++            Assert.Equal(0L, (await client.QueryAsync()).AppliedOps);
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 2 — 단일 연결 증감
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>연결 하나가 더하기·빼기를 보낸 뒤 조회하면 순 결과와 연산 수가 정확한지 검증합니다.</summary>
++    /// <remarks>
++    /// 같은 세션의 패킷은 서버 수신 루프가 순차 처리하므로, 마지막 명령 뒤의 조회 응답은
++    /// 앞선 모든 명령이 적용된 뒤의 값입니다(이것이 시나리오 배리어의 근거).
++    /// </remarks>
++    [Fact]
++    public async Task SingleConnection_IncrementsAndDecrements_AreAllApplied()
++    {
++        // checked: 상수를 키웠을 때 기대값이 조용히 오버플로하는 오검증을 막는다.
++        long expectedValue = checked(SingleConnectionIncrements - SingleConnectionDecrements);
++        long expectedOps = checked(SingleConnectionIncrements + SingleConnectionDecrements);
++
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out _);
++
++        try
++        {
++            await using var client = new RawCounterClient();
++            await client.ConnectAsync(port);
++
++            for (int i = 0; i < SingleConnectionIncrements; i++)
++                await client.SendIncrementAsync();
++            for (int i = 0; i < SingleConnectionDecrements; i++)
++                await client.SendDecrementAsync();
++
++            CounterSnapshot snapshot = await client.QueryAsync();
++
++            Assert.Equal(expectedValue, snapshot.Value);
++            Assert.Equal(expectedOps, snapshot.AppliedOps);
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 3 — 8연결 동시 경합 후 배리어·최종 조회 (주 시나리오)
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 실제 <see cref="CounterScenario.RunAsync"/>로 8연결이 동시에 증감했을 때
++    /// 최종값이 <c>8 × (1,000 − 750) = 2,000</c>, 적용 연산 수가 <c>8 × 1,750 = 14,000</c>인지 검증합니다.
++    /// </summary>
++    [Fact]
++    public async Task Scenario_EightConnections_ProducesDeterministicFinalValue()
++    {
++        long expectedValue = checked((long)ScenarioConnections * (ScenarioIncrements - ScenarioDecrements));
++        long expectedOps = checked((long)ScenarioConnections * (ScenarioIncrements + ScenarioDecrements));
++
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out _);
++
++        try
++        {
++            CounterScenarioResult result = await CounterScenario.RunAsync(
++                OptionsFor(port, ScenarioConnections, ScenarioIncrements, ScenarioDecrements));
++
++            Assert.Equal(new CounterSnapshot(0, 0), result.InitialSnapshot);
++            Assert.Equal(expectedValue, result.ExpectedValue);
++            Assert.Equal(expectedOps, result.ExpectedAppliedOps);
++            Assert.Equal(expectedValue, result.ActualValue);
++            Assert.Equal(expectedOps, result.ActualAppliedOps);
++            Assert.True(result.Passed, $"시나리오 FAIL: Value {result.ActualValue}/{result.ExpectedValue}, " +
++                                       $"AppliedOps {result.ActualAppliedOps}/{result.ExpectedAppliedOps}");
++
++            // 서버 측 상태로도 교차 확인한다(클라이언트 응답만 믿지 않는다).
++            Assert.Equal(expectedValue, state.Value);
++            Assert.Equal(expectedOps, state.AppliedOps);
++
++            // 실측 소요 시간이 타임아웃 상수 대비 충분히 여유로운지 확인한다.
++            Assert.True(result.Elapsed < TimeSpan.FromSeconds(ScenarioTimeoutSeconds),
++                $"실행 시간 {result.Elapsed}이 기한 {ScenarioTimeoutSeconds}초에 근접합니다.");
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 4 — 총 연산 0 (상쇄 은폐 방지)
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 더하기와 빼기가 같은 수인 시나리오에서 <c>Value == 0</c>이면서
++    /// <c>AppliedOps</c>는 전량 계수되는지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// <c>Value == 0</c>만 보면 "패킷이 하나도 처리되지 않음"과 구분되지 않습니다.
++    /// <c>AppliedOps</c> 단언이 그 은폐를 깹니다.
++    /// </remarks>
++    [Fact]
++    public async Task Scenario_BalancedOperations_NetsToZeroButCountsEveryOperation()
++    {
++        long expectedOps = checked((long)BalancedConnections * (BalancedOpsEachWay + BalancedOpsEachWay));
++
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out _);
++
++        try
++        {
++            CounterScenarioResult result = await CounterScenario.RunAsync(
++                OptionsFor(port, BalancedConnections, BalancedOpsEachWay, BalancedOpsEachWay));
++
++            Assert.True(result.Passed);
++            Assert.Equal(0L, result.ActualValue);
++            Assert.Equal(expectedOps, result.ActualAppliedOps);
++            Assert.Equal(0L, state.Value);
++            Assert.Equal(expectedOps, state.AppliedOps);
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 5 — 잘못된 본문 길이는 상태를 바꾸지 않는다
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 헤더가 <c>Id=3</c>인데 본문이 0B가 아닌 프레임은 거부되고,
++    /// <c>Value</c>와 <c>AppliedOps</c>가 <b>둘 다</b> 변하지 않는지 검증합니다.
++    /// 이어서 다른 연결은 정상 동작해야 합니다(오류는 해당 세션에만 국한).
++    /// </summary>
++    /// <remarks>
++    /// <b>[배리어]</b> 프레임을 보낸 직후 단언하면 서버가 아직 처리하기 전일 수 있어 테스트가 무의미하게 통과합니다.
++    /// 서버의 <c>OnClientError</c> 신호를 기다린 뒤에야 상태를 단언합니다.
++    /// </remarks>
++    [Fact]
++    public async Task MalformedBodyLength_IsRejected_AndLeavesStateUntouched()
++    {
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out Task<Exception> sessionFaulted);
++
++        try
++        {
++            await using (var bad = new RawCounterClient())
++            {
++                await bad.ConnectAsync(port);
++                // Id=3(더하기)인데 본문 4B를 선언·전송 → 증감 명령의 고정 길이(0B) 규칙 위반.
++                await bad.SendRawFrameAsync(BuildFrame(IncrementPacket.Id, bodyLength: 4));
++
++                Exception error = await sessionFaulted.WaitAsync(TimeSpan.FromMilliseconds(RoundTripTimeoutMs));
++                Assert.IsType<InvalidDataException>(error);
++                Assert.Contains(CounterHandler.InvalidBodyMessagePrefix, error.Message);
++            }
++
++            // 거부된 프레임은 카운터를 전혀 건드리지 않아야 한다 — 값과 연산 수 둘 다.
++            Assert.Equal(0L, state.Value);
++            Assert.Equal(0L, state.AppliedOps);
++
++            // 오류로 한 세션이 끊긴 뒤에도 새 연결은 정상 동작해야 한다.
++            await using var healthy = new RawCounterClient();
++            await healthy.ConnectAsync(port);
++            await healthy.SendIncrementAsync();
++            CounterSnapshot snapshot = await healthy.QueryAsync();
++
++            Assert.Equal(1L, snapshot.Value);
++            Assert.Equal(1L, snapshot.AppliedOps);
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 6 — 알 수 없는 패킷 ID
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 서버가 모르는 ID(250)의 프레임을 거부하고 상태를 그대로 두는지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// 서버 측은 정상 PING(0xFFFE)만 하트비트로 가로채며 그 외 ID는 앱 경로(<see cref="CounterHandler"/>)에 도달합니다.
++    /// 따라서 250은 실제로 핸들러의 미지 ID 분기를 탑니다.
++    /// </remarks>
++    [Fact]
++    public async Task UnknownPacketId_IsRejected_AndLeavesStateUntouched()
++    {
++        int port = GetFreePort();
++        var state = new CounterState();
++        IServerListener listener = StartCounterListener(port, state, out Task<Exception> sessionFaulted);
++
++        try
++        {
++            await using (var bad = new RawCounterClient())
++            {
++                await bad.ConnectAsync(port);
++                await bad.SendRawFrameAsync(BuildFrame(UnknownPacketId, bodyLength: 0));
++
++                Exception error = await sessionFaulted.WaitAsync(TimeSpan.FromMilliseconds(RoundTripTimeoutMs));
++                Assert.IsType<InvalidDataException>(error);
++                Assert.Contains(CounterHandler.UnknownPacketMessagePrefix, error.Message);
++            }
++
++            Assert.Equal(0L, state.Value);
++            Assert.Equal(0L, state.AppliedOps);
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 7 — 처리 도중 서버 종료
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 시나리오 진행 중 서버가 종료되면 <see cref="CounterScenario.RunAsync"/>가
++    /// PASS를 반환하지 않고 실패로 표면화하며, 모든 연결을 정리하고 반환하는지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// <b>[결정성 — 시간에 의존하지 않는다]</b><br/>
++    /// "N밀리초 뒤에 서버를 내린다"는 방식은 시나리오가 먼저 끝나 버리면 통과해 버리는 경주가 됩니다.
++    /// 대신 서버가 <b>두 번째 조회부터는 응답하지 않고</b> 종료하도록 만듭니다.
++    /// 첫 조회는 <see cref="CounterScenario.RunAsync"/>의 기준값 조회이고, 두 번째부터는 배리어 조회이므로,
++    /// 최소 한 연결은 <b>반드시</b> 확인 응답을 받지 못합니다 — 시나리오는 절대 완료될 수 없습니다.
++    /// <br/><b>[속도]</b> 클라이언트가 연결 해제 시 대기 중인 조회를 즉시 실패시키므로,
++    /// 이 테스트는 기한 만료를 기다리지 않고 곧바로 끝나야 합니다(그 배선이 빠지면 기한까지 매달려 실패).
++    /// </remarks>
++    [Fact]
++    public async Task Scenario_ServerStopsMidRun_FailsFastWithoutClaimingPass()
++    {
++        const int Connections = 4;
++        const int IncrementsEach = 100;
++        const int DecrementsEach = 100;
++        const int RunTimeoutSeconds = 20;      // 이 테스트 전용 기한
++        const int FailFastBudgetSeconds = 10;  // 연결 해제 배선이 동작하면 이보다 훨씬 빨리 끝나야 한다
++
++        int port = GetFreePort();
++        var state = new CounterState();
++        var handler = new CounterHandler(state);
++
++        IServerListener listener = ServerNet.CreateListener();
++        // long: Interlocked 대상 카운터. 여러 세션의 IO 스레드가 동시에 증가시키므로 원자 연산이 필요하다.
++        long queryCount = 0;
++        // Stop()을 정확히 1회만 실행하기 위한 핸들. Stop()은 활성 세션을 순회하며 동기 Dispose하므로
++        // 두 스레드가 동시에 들어가면 이중 Dispose로 ObjectDisposedException이 날 수 있다.
++        // 결정성은 "응답을 드롭한다"에서 나오고 Stop()은 fail-fast 단언을 의미 있게 만드는 역할뿐이므로 1회면 충분하다.
++        Task? stopTask = null;
++        listener.OnReceived = (ISession session, ReadOnlyMemory<byte> data) =>
++        {
++            // TryParseHeader: 앞 4B를 무할당으로 해석해 조회 패킷만 골라낸다.
++            if (PacketPool.TryParseHeader(data.Span, out ushort packetId, out _)
++                && packetId == CounterQueryPacket.Id)
++            {
++                long n = Interlocked.Increment(ref queryCount);
++                if (n == 2)
++                {
++                    // Task.Run으로 분리: 지금 이 콜백을 실행 중인 세션 자신을 인라인으로 Dispose하면
++                    // 자기 자신의 완료를 기다리는 교착이 생길 수 있다. 정확히 1회만 스케줄한다.
++                    stopTask = Task.Run(listener.Stop);
++                }
++                if (n >= 2)
++                {
++                    // 응답하지 않고 즉시 반환 → 이 연결의 배리어 확인은 영원히 오지 않는다(결정적 실패).
++                    return ValueTask.CompletedTask;
++                }
++            }
++            return handler.HandleAsync(session, data);
++        };
++        listener.Start(port, IPAddress.Loopback);
++
++        var stopwatch = Stopwatch.StartNew();
++        try
++        {
++            var options = new CounterScenarioOptions
++            {
++                Host = "127.0.0.1",
++                Port = port,
++                ConnectionCount = Connections,
++                IncrementsPerConnection = IncrementsEach,
++                DecrementsPerConnection = DecrementsEach,
++                Timeout = TimeSpan.FromSeconds(RunTimeoutSeconds),
++            };
++
++            // 값 불일치는 Passed=false로, 통신 실패는 예외로 온다. 어느 쪽이든 PASS가 아니어야 한다.
++            Exception? captured = null;
++            CounterScenarioResult? result = null;
++            try
++            {
++                result = await CounterScenario.RunAsync(options);
++            }
++            catch (Exception ex)
++            {
++                captured = ex;
++            }
++            stopwatch.Stop();
++
++            Assert.True(captured is not null || result?.Passed == false,
++                "서버가 중도 종료됐는데도 시나리오가 PASS를 반환했습니다.");
++
++            // 연결 해제 시 대기자를 즉시 실패시키는 배선이 있으면 기한(20초)을 기다리지 않는다.
++            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(FailFastBudgetSeconds),
++                $"서버 종료 후 시나리오가 기한까지 매달렸습니다({stopwatch.Elapsed}). 연결 해제 시 조회 대기자를 실패시키는 배선을 확인하십시오.");
++        }
++        finally
++        {
++            // 콜백이 스케줄한 Stop()이 끝난 뒤에만 정리한다. 두 Stop()이 겹치면 세션 이중 Dispose가 될 수 있다.
++            if (stopTask is not null) await stopTask;
++            else listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 테스트 8 — 무응답 서버 타임아웃
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 조회에 절대 응답하지 않는 서버를 상대로 <see cref="CounterScenario.RunAsync"/>가
++    /// 기한 안에 <see cref="TimeoutException"/>으로 끝나고, 매달리지 않고 반환하는지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// 단순히 대기를 포기하는 것이 아니라 <b>실제 작업 취소와 연결 정리</b>까지 마쳐야 합니다.
++    /// "반환했다"만 확인하면 <c>finally</c>의 정리 루프가 중간에 빠져 연결이 새어도 통과하므로,
++    /// 서버 측 <c>OnClientDisconnected</c>가 <b>연결 수만큼</b> 호출되는 것까지 확인합니다.
++    /// </remarks>
++    [Fact]
++    public async Task Scenario_UnresponsiveServer_TimesOutAndCleansUp()
++    {
++        const int Connections = 2;
++
++        int port = GetFreePort();
++
++        IServerListener listener = ServerNet.CreateListener();
++        // 수신은 하되 어떤 응답도 보내지 않는다 → 조회 대기가 영원히 풀리지 않는 상황을 만든다.
++        listener.OnReceived = (ISession _, ReadOnlyMemory<byte> _) => ValueTask.CompletedTask;
++
++        // 소켓이 실제로 정리됐음을 서버 쪽에서 관측하는 신호기.
++        // TaskCompletionSource<bool>: IO 스레드(해제 콜백) → 테스트 스레드 전달. RunContinuationsAsynchronously로
++        // 대기자가 IO 스레드에서 인라인 실행되지 않게 한다.
++        var allDisconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
++        // long: Interlocked 대상 카운터. 여러 세션의 IO 스레드가 동시에 증가시킨다.
++        long disconnected = 0;
++        listener.OnClientDisconnected = (ISession _) =>
++        {
++            if (Interlocked.Increment(ref disconnected) >= Connections)
++                allDisconnected.TrySetResult(true);
++            return ValueTask.CompletedTask;
++        };
++        listener.Start(port, IPAddress.Loopback);
++
++        try
++        {
++            var options = new CounterScenarioOptions
++            {
++                Host = "127.0.0.1",
++                Port = port,
++                ConnectionCount = Connections,
++                IncrementsPerConnection = 1,
++                DecrementsPerConnection = 1,
++                Timeout = TimeSpan.FromMilliseconds(UnresponsiveTimeoutMs),
++            };
++
++            var stopwatch = Stopwatch.StartNew();
++            // WaitAsync: RunAsync가 정리까지 마치고 반환하지 않으면 여기서 TimeoutException으로 명확히 실패한다
++            // (테스트가 무기한 hang되지 않도록 하는 안전망).
++            await Assert.ThrowsAsync<TimeoutException>(
++                () => CounterScenario.RunAsync(options).WaitAsync(TimeSpan.FromMilliseconds(UnresponsiveObserveMarginMs)));
++            stopwatch.Stop();
++
++            Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(UnresponsiveObserveMarginMs),
++                $"무응답 서버에서 시나리오 정리가 지연됐습니다({stopwatch.Elapsed}).");
++
++            // 반환만으로는 부족하다 — 연결이 실제로 끊겼는지 서버 쪽에서 확인한다.
++            // 정리 루프가 일부 연결을 빠뜨리면 이 대기가 타임아웃되어 실패한다.
++            await allDisconnected.Task.WaitAsync(TimeSpan.FromMilliseconds(RoundTripTimeoutMs));
++            Assert.Equal(Connections, (int)Interlocked.Read(ref disconnected));
++        }
++        finally
++        {
++            listener.Stop();
++        }
++    }
++
++    // ═════════════════════════════════════════════════════════════════════════
++    // 헬퍼
++    // ═════════════════════════════════════════════════════════════════════════
++
++    /// <summary>
++    /// 임의의 ID와 <b>선언 본문 길이</b>를 가진 원시 프레임을 만듭니다(잘못된 프레임 생성용).
++    /// </summary>
++    /// <param name="packetId">헤더에 기록할 패킷 ID입니다.</param>
++    /// <param name="bodyLength">헤더에 기록하고 실제로도 채울 본문 바이트 수입니다.</param>
++    /// <remarks>
++    /// 선언 길이와 실제 길이를 <b>일치</b>시키는 이유: 프레이밍 계층은 헤더가 선언한 만큼을 잘라 전달하므로,
++    /// 여기서 불일치를 만들면 핸들러에 도달하기 전에 프레이밍 단계에서 갈립니다.
++    /// 이 테스트가 겨냥하는 것은 <b>핸들러의 ID별 고정 길이 검증</b>입니다.
++    /// </remarks>
++    private static byte[] BuildFrame(ushort packetId, int bodyLength)
++    {
++        var frame = new byte[PacketPool.HeaderSize + bodyLength];
++        PacketPool.WriteHeader(frame, packetId, bodyLength);
++        return frame; // 본문은 0으로 채워진 상태 그대로 — 내용은 검증 대상이 아니다
++    }
++
++    /// <summary>
++    /// 프로토콜 수준 테스트를 위해 원시 프레임을 직접 주고받는 최소 클라이언트입니다.
++    /// </summary>
++    /// <remarks>
++    /// <see cref="CounterScenario"/>가 캡슐화한 연결은 예제 알고리즘 전용이라 임의의 잘못된 프레임을 보낼 수 없습니다.
++    /// 이 헬퍼는 <b>클라이언트 알고리즘의 복제가 아니라</b> 프로토콜 하위 계층 접근 수단입니다
++    /// (주 시나리오 검증은 실제 <see cref="CounterScenario.RunAsync"/>가 담당합니다).
++    /// </remarks>
++    private sealed class RawCounterClient : IAsyncDisposable
++    {
++        // ServerNet.CreateClient(): SocketPipelineClient(internal)를 IClientConnection으로 반환.
++        private readonly IClientConnection _connection = ServerNet.CreateClient();
++
++        // 조회 응답 대기자. IO 스레드(OnReceived)와 테스트 스레드가 함께 접근하므로 Interlocked로 소유권을 옮긴다.
++        private TaskCompletionSource<CounterSnapshot>? _pending;
++
++        public async Task ConnectAsync(int port)
++        {
++            _connection.OnReceived = data =>
++            {
++                TaskCompletionSource<CounterSnapshot>? waiter = Interlocked.Exchange(ref _pending, null);
++                if (waiter is null) return ValueTask.CompletedTask;
++
++                // data는 콜백 반환 후 무효가 되는 수신 버퍼 뷰 → 동기 검증·역직렬화 후 값 타입만 넘긴다.
++                // 검증 없이 Deserialize하면 짧은 프레임에서 EndOfStreamException이 콜백 밖으로 새어
++                // 수신 루프가 죽고, 명확한 단언 실패가 "타임아웃까지 hang"으로 퇴화한다.
++                // 예외는 던지지 않고 대기자에 전달한다(CounterConnection과 동일한 원칙).
++                ReadOnlySpan<byte> frame = data.Span; // zero-copy 뷰
++                if (!PacketPool.TryParseHeader(frame, out ushort packetId, out int bodyLength)
++                    || packetId != CounterValuePacket.Id
++                    || bodyLength != CounterValuePacket.BodySize
++                    || frame.Length != PacketPool.HeaderSize + CounterValuePacket.BodySize)
++                {
++                    waiter.TrySetException(new IOException(
++                        $"조회 응답이 프로토콜에 맞지 않습니다(프레임 {frame.Length}B). " +
++                        $"기대: Id={CounterValuePacket.Id}, 본문 {CounterValuePacket.BodySize}B."));
++                    return ValueTask.CompletedTask;
++                }
++
++                CounterValuePacket packet = Serializer.Deserialize<CounterValuePacket>(frame);
++                waiter.TrySetResult(new CounterSnapshot(packet.Value, packet.AppliedOps));
++                return ValueTask.CompletedTask;
++            };
++            _connection.OnDisconnected = () =>
++            {
++                Interlocked.Exchange(ref _pending, null)
++                    ?.TrySetException(new IOException("조회 대기 중 연결이 끊겼습니다."));
++                return ValueTask.CompletedTask;
++            };
++            await _connection.ConnectAsync("127.0.0.1", port);
++        }
++
++        // SendAsync<T>: ArrayPool 대여 → 직렬화 → 소켓 직접 기록 → 반납. struct 패킷이라 박싱 없음.
++        public ValueTask SendIncrementAsync() => _connection.SendAsync(new IncrementPacket());
++        public ValueTask SendDecrementAsync() => _connection.SendAsync(new DecrementPacket());
++
++        // ReadOnlyMemory<byte>: 배열 복사 없이 "포인터+길이" 뷰만 넘어간다(zero-copy).
++        public ValueTask SendRawFrameAsync(byte[] frame) => _connection.SendAsync(frame.AsMemory());
++
++        public async Task<CounterSnapshot> QueryAsync()
++        {
++            // RunContinuationsAsynchronously: TrySetResult 호출 IO 스레드에서 후속 코드가 인라인 실행되지 않게 한다.
++            var waiter = new TaskCompletionSource<CounterSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
++            if (Interlocked.CompareExchange(ref _pending, waiter, null) is not null)
++                throw new InvalidOperationException("미완료 조회가 이미 있습니다.");
++
++            // 대기자를 송신 전에 게시한다 — 루프백은 응답이 먼저 도착할 만큼 빠르다.
++            await _connection.SendAsync(new CounterQueryPacket());
++            return await waiter.Task.WaitAsync(TimeSpan.FromMilliseconds(RoundTripTimeoutMs));
++        }
++
++        public async ValueTask DisposeAsync()
++        {
++            Interlocked.Exchange(ref _pending, null)?.TrySetException(new IOException("연결이 정리되었습니다."));
++            await _connection.DisposeAsync();
++        }
++    }
++}
+diff --git a/CounterExample.Tests/CounterExample.Tests.csproj b/CounterExample.Tests/CounterExample.Tests.csproj
+new file mode 100644
+index 0000000..1edd538
+--- /dev/null
++++ b/CounterExample.Tests/CounterExample.Tests.csproj
+@@ -0,0 +1,27 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <TargetFramework>net10.0</TargetFramework>
++    <Nullable>enable</Nullable>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <IsPackable>false</IsPackable>
++    <RootNamespace>CounterExample.Tests</RootNamespace>
++  </PropertyGroup>
++  <ItemGroup>
++    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
++    <PackageReference Include="xunit" Version="2.9.3" />
++    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
++      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
++      <PrivateAssets>all</PrivateAssets>
++    </PackageReference>
++  </ItemGroup>
++  <ItemGroup>
++    <!-- ServerLib: 패킷·팩토리 등 public API 사용 -->
++    <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
++    <!-- CounterServer / CounterClient: 예제의 실제 CounterState·CounterHandler·CounterScenario를 그대로 호출한다.
++         테스트가 서버/클라이언트 알고리즘을 복제하면 예제와 테스트가 갈라져 "테스트는 통과하는데 예제는 틀린" 상태가 생긴다.
++         세 타입은 public이므로 InternalsVisibleTo가 필요 없다(두 exe의 암묵 internal Program이 동시에 노출되면
++         테스트가 Program을 비수식 참조하는 순간 CS0104 모호 참조가 되는 함정도 함께 회피된다). -->
++    <ProjectReference Include="..\CounterServer\CounterServer.csproj" />
++    <ProjectReference Include="..\CounterClient\CounterClient.csproj" />
++  </ItemGroup>
++</Project>
+diff --git a/CounterExample.Tests/CounterPacketTests.cs b/CounterExample.Tests/CounterPacketTests.cs
+new file mode 100644
+index 0000000..611b861
+--- /dev/null
++++ b/CounterExample.Tests/CounterPacketTests.cs
+@@ -0,0 +1,139 @@
++using ServerLib.Core.Memory;
++using ServerLib.Core.Serialization;
++using ServerLib.Core.Serialization.Packets;
++using Xunit;
++
++namespace CounterExample.Tests;
++
++/// <summary>
++/// 경합 카운터 예제가 쓰는 4개 패킷의 ID·본문 길이·직렬화 왕복을 검증합니다.
++/// </summary>
++/// <remarks>
++/// 와이어 포맷은 서버와 클라이언트가 <b>동시에</b> 지켜야 하는 계약이라, 한쪽만 바뀌면
++/// 런타임에 "길이 검증 실패"라는 모호한 증상으로만 드러납니다. 여기서 상수로 못 박아 둡니다.
++/// </remarks>
++public class CounterPacketTests
++{
++    // BinaryPacketSerializer: 무상태(stateless), Thread-safe → 병렬 실행되는 테스트들이 공유해도 안전.
++    private static readonly BinaryPacketSerializer Serializer = new();
++
++    // ── 와이어 포맷 상수 (F-2 확정: 응답 본문은 8B가 아니라 16B) ───────────────
++    private const ushort ExpectedIncrementId = 3;
++    private const ushort ExpectedDecrementId = 4;
++    private const ushort ExpectedQueryId = 18;
++    private const ushort ExpectedValueId = 19;
++    private const int ExpectedCommandBodySize = 0;   // 증감·조회는 본문 없음
++    private const int ExpectedValueBodySize = 16;    // long Value(8) + long AppliedOps(8)
++
++    /// <summary>증감 명령 패킷의 ID와 본문 길이가 계약대로인지 확인합니다.</summary>
++    [Fact]
++    public void IncrementAndDecrement_HaveExpectedIdsAndEmptyBody()
++    {
++        Assert.Equal(ExpectedIncrementId, IncrementPacket.Id);
++        Assert.Equal(ExpectedDecrementId, DecrementPacket.Id);
++
++        var inc = new IncrementPacket();
++        var dec = new DecrementPacket();
++        Assert.Equal(ExpectedIncrementId, inc.PacketId);
++        Assert.Equal(ExpectedDecrementId, dec.PacketId);
++        Assert.Equal(ExpectedCommandBodySize, inc.GetBodySize());
++        Assert.Equal(ExpectedCommandBodySize, dec.GetBodySize());
++    }
++
++    /// <summary>조회 요청 패킷의 ID와 본문 길이(0B)를 확인합니다.</summary>
++    [Fact]
++    public void CounterQueryPacket_HasExpectedIdAndEmptyBody()
++    {
++        Assert.Equal(ExpectedQueryId, CounterQueryPacket.Id);
++        Assert.Equal(ExpectedCommandBodySize, CounterQueryPacket.BodySize);
++
++        var query = new CounterQueryPacket();
++        Assert.Equal(ExpectedQueryId, query.PacketId);
++        Assert.Equal(ExpectedCommandBodySize, query.GetBodySize());
++    }
++
++    /// <summary>값 응답 패킷의 ID와 본문 길이(16B = long 2개)를 확인합니다.</summary>
++    [Fact]
++    public void CounterValuePacket_HasExpectedIdAndSixteenByteBody()
++    {
++        Assert.Equal(ExpectedValueId, CounterValuePacket.Id);
++        Assert.Equal(ExpectedValueBodySize, CounterValuePacket.BodySize);
++
++        var packet = new CounterValuePacket();
++        Assert.Equal(ExpectedValueId, packet.PacketId);
++        Assert.Equal(ExpectedValueBodySize, packet.GetBodySize());
++    }
++
++    /// <summary>직렬화된 프레임의 헤더가 ID와 본문 길이를 정확히 담고, 전체 길이가 4+16=20B인지 확인합니다.</summary>
++    /// <remarks>
++    /// 클라이언트의 응답 검증 상수는 <b>본문</b> 16이며 <b>프레임</b>은 20입니다.
++    /// 4바이트 헤더를 빼먹은 off-by-4는 "16을 쓰기는 썼는데 틀린" 형태로 조용히 통과할 수 있어 여기서 분리 단언합니다.
++    /// </remarks>
++    [Fact]
++    public void CounterValuePacket_SerializedFrame_HasHeaderPlusSixteenByteBody()
++    {
++        // 정확한 크기의 스택 밖 배열: 테스트 1회용이라 풀 대여 없이 직접 할당한다.
++        var buffer = new byte[PacketPool.HeaderSize + ExpectedValueBodySize];
++        int written = Serializer.Serialize(new CounterValuePacket { Value = 7, AppliedOps = 11 }, buffer);
++
++        Assert.Equal(PacketPool.HeaderSize + ExpectedValueBodySize, written);
++        Assert.True(PacketPool.TryParseHeader(buffer, out ushort packetId, out int bodyLength));
++        Assert.Equal(ExpectedValueId, packetId);
++        Assert.Equal(ExpectedValueBodySize, bodyLength);
++    }
++
++    /// <summary>조회 요청 프레임이 헤더 4바이트뿐인지 확인합니다.</summary>
++    [Fact]
++    public void CounterQueryPacket_SerializedFrame_IsHeaderOnly()
++    {
++        var buffer = new byte[PacketPool.HeaderSize];
++        int written = Serializer.Serialize(new CounterQueryPacket(), buffer);
++
++        Assert.Equal(PacketPool.HeaderSize, written);
++        Assert.True(PacketPool.TryParseHeader(buffer, out ushort packetId, out int bodyLength));
++        Assert.Equal(ExpectedQueryId, packetId);
++        Assert.Equal(ExpectedCommandBodySize, bodyLength);
++    }
++
++    /// <summary>
++    /// 값 응답이 0·음수·<see cref="long"/> 경계값에서도 왕복 후 원본과 동일한지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// 카운터는 빼기가 더 많으면 음수가 되고, 학습용으로 값 범위를 극단까지 넣어 볼 수 있습니다.
++    /// 리틀엔디언 <c>WriteInt64</c>/<c>ReadInt64</c>가 부호 비트와 경계값을 손상시키지 않음을 확인합니다.
++    /// </remarks>
++    [Theory]
++    [InlineData(0L, 0L)]                              // 초기 상태
++    [InlineData(2_000L, 14_000L)]                     // 기본 시나리오 기대값
++    [InlineData(-1L, 1L)]                             // 빼기 1회만 적용
++    [InlineData(-750L, 750L)]                         // 빼기만 누적
++    [InlineData(long.MinValue, long.MaxValue)]        // 경계값 (부호 비트)
++    [InlineData(long.MaxValue, long.MinValue)]        // 경계값 (반대 배치 — 필드 순서 뒤바뀜 탐지)
++    public void CounterValuePacket_RoundTrips(long value, long appliedOps)
++    {
++        var buffer = new byte[PacketPool.HeaderSize + ExpectedValueBodySize];
++        Serializer.Serialize(new CounterValuePacket { Value = value, AppliedOps = appliedOps }, buffer);
++
++        // Deserialize<T>: 헤더를 건너뛰고 본문만 SpanReader로 읽는다. struct라 힙 할당 0.
++        CounterValuePacket decoded = Serializer.Deserialize<CounterValuePacket>(buffer);
++
++        Assert.Equal(value, decoded.Value);
++        Assert.Equal(appliedOps, decoded.AppliedOps);
++    }
++
++    /// <summary>본문 없는 패킷도 왕복 후 ID가 보존되는지 확인합니다.</summary>
++    [Fact]
++    public void EmptyBodyPackets_RoundTrip()
++    {
++        var buffer = new byte[PacketPool.HeaderSize];
++
++        Serializer.Serialize(new CounterQueryPacket(), buffer);
++        Assert.Equal(ExpectedQueryId, Serializer.Deserialize<CounterQueryPacket>(buffer).PacketId);
++
++        Serializer.Serialize(new IncrementPacket(), buffer);
++        Assert.Equal(ExpectedIncrementId, Serializer.Deserialize<IncrementPacket>(buffer).PacketId);
++
++        Serializer.Serialize(new DecrementPacket(), buffer);
++        Assert.Equal(ExpectedDecrementId, Serializer.Deserialize<DecrementPacket>(buffer).PacketId);
++    }
++}
+diff --git a/CounterExample.Tests/CounterStateTests.cs b/CounterExample.Tests/CounterStateTests.cs
+new file mode 100644
+index 0000000..641e16b
+--- /dev/null
++++ b/CounterExample.Tests/CounterStateTests.cs
+@@ -0,0 +1,193 @@
++using CounterServer;
++using Xunit;
++
++namespace CounterExample.Tests;
++
++/// <summary>
++/// 실제 <see cref="CounterState"/>를 여러 작업이 동시에 갱신했을 때
++/// <c>Value</c>와 <c>AppliedOps</c>가 결정적 기대값과 일치하는지 검증합니다(경합 정확성).
++/// </summary>
++/// <remarks>
++/// <b>[이 테스트가 실증하는 것]</b> <see cref="Interlocked"/> 기반 갱신은 갱신 유실(lost update)을 만들지 않습니다.
++/// 만약 구현이 <c>_value++</c>(읽기→더하기→쓰기 3단계, 비원자)로 퇴행하면 이 테스트들은
++/// 기대값보다 <b>작은</b> 값으로 실패합니다.
++/// <br/><br/>
++/// <b>[상쇄 은폐 방지]</b> 더하기와 빼기가 같은 수면 <c>Value</c>가 0이 되는데, 이는 "정확히 상쇄됨"과
++/// "아무것도 처리되지 않음"을 구분하지 못합니다. 그래서 <b>모든</b> 테스트가 <c>AppliedOps</c>를 함께 단언합니다.
++/// <br/><br/>
++/// <b>[정지 상태 단언]</b> <c>Value</c>·<c>AppliedOps</c> 쌍은 원자적으로 읽히지 않으므로,
++/// 두 값을 함께 단언하는 것은 <b>모든 갱신 작업이 완료된 뒤</b>에만 유효합니다.
++/// 각 테스트는 <c>Task.WhenAll</c>로 전 작업 완료를 확인한 다음에만 검증합니다.
++/// </remarks>
++public class CounterStateTests
++{
++    // ── 부하 규모 상수 ────────────────────────────────────────────────────────
++    // 작업 수를 CPU 코어 수보다 크게 잡아 실제 선점·인터리빙이 일어나게 한다(경합 재현).
++    private const int TaskCount = 8;
++    private const int IncrementsPerTask = 10_000;
++    private const int DecrementsPerTask = 7_500;
++
++    /// <summary>새로 만든 상태는 <c>(0, 0)</c>이어야 합니다.</summary>
++    [Fact]
++    public void NewState_StartsAtZero()
++    {
++        var state = new CounterState();
++
++        Assert.Equal(0L, state.Value);
++        Assert.Equal(0L, state.AppliedOps);
++    }
++
++    /// <summary>단일 스레드에서 증감이 값과 적용 연산 수에 각각 어떻게 반영되는지 확인합니다.</summary>
++    /// <remarks>빼기여도 <c>AppliedOps</c>는 <b>증가</b>합니다(수행한 연산 개수를 세는 값이므로).</remarks>
++    [Fact]
++    public void IncrementAndDecrement_UpdateValueAndAppliedOpsIndependently()
++    {
++        var state = new CounterState();
++
++        Assert.Equal(1L, state.Increment());
++        Assert.Equal(2L, state.Increment());
++        Assert.Equal(1L, state.Decrement());
++
++        Assert.Equal(1L, state.Value);
++        Assert.Equal(3L, state.AppliedOps); // 더하기 2 + 빼기 1 = 연산 3회
++    }
++
++    /// <summary>여러 작업이 동시에 더하기만 했을 때 증가분이 하나도 유실되지 않는지 검증합니다.</summary>
++    [Fact]
++    public async Task ConcurrentIncrements_LoseNoUpdates()
++    {
++        // checked: 규모 상수를 키웠을 때 기대값이 조용히 오버플로해 "틀린 기대값과 일치"하는 오검증을 막는다.
++        long expectedValue = checked((long)TaskCount * IncrementsPerTask);
++        long expectedOps = expectedValue;
++
++        var state = new CounterState();
++        await RunConcurrentlyAsync(state, IncrementsPerTask, decrements: 0);
++
++        Assert.Equal(expectedValue, state.Value);
++        Assert.Equal(expectedOps, state.AppliedOps);
++    }
++
++    /// <summary>여러 작업이 동시에 빼기만 했을 때 감소분이 하나도 유실되지 않는지 검증합니다.</summary>
++    [Fact]
++    public async Task ConcurrentDecrements_LoseNoUpdates()
++    {
++        long expectedValue = checked(-((long)TaskCount * DecrementsPerTask));
++        long expectedOps = checked((long)TaskCount * DecrementsPerTask);
++
++        var state = new CounterState();
++        await RunConcurrentlyAsync(state, increments: 0, decrements: DecrementsPerTask);
++
++        Assert.Equal(expectedValue, state.Value);
++        Assert.Equal(expectedOps, state.AppliedOps);
++    }
++
++    /// <summary>더하기·빼기 수가 다른 혼합 부하에서 순(net) 결과와 연산 수가 모두 정확한지 검증합니다.</summary>
++    /// <remarks>불균형(1만 vs 7,500)으로 두어, 상쇄로 결함이 가려지지 않게 합니다.</remarks>
++    [Fact]
++    public async Task ConcurrentMixedUnbalanced_ProducesDeterministicNetResult()
++    {
++        long expectedValue = checked((long)TaskCount * (IncrementsPerTask - DecrementsPerTask));
++        long expectedOps = checked((long)TaskCount * (IncrementsPerTask + DecrementsPerTask));
++
++        var state = new CounterState();
++        await RunConcurrentlyAsync(state, IncrementsPerTask, DecrementsPerTask);
++
++        Assert.Equal(expectedValue, state.Value);
++        Assert.Equal(expectedOps, state.AppliedOps);
++    }
++
++    /// <summary>
++    /// 더하기와 빼기 수가 같아 순 결과가 0인 부하에서, <c>AppliedOps</c>가 "정말 처리됐음"을 증명하는지 검증합니다.
++    /// </summary>
++    /// <remarks>
++    /// <c>Value == 0</c> 하나만 보면 갱신이 통째로 유실돼도 통과합니다. <c>AppliedOps</c> 단언이 그 은폐를 깹니다.
++    /// </remarks>
++    [Fact]
++    public async Task ConcurrentBalanced_NetsToZeroButRecordsEveryOperation()
++    {
++        long expectedOps = checked((long)TaskCount * (IncrementsPerTask + IncrementsPerTask));
++
++        var state = new CounterState();
++        await RunConcurrentlyAsync(state, IncrementsPerTask, decrements: IncrementsPerTask);
++
++        Assert.Equal(0L, state.Value);
++        Assert.Equal(expectedOps, state.AppliedOps);
++    }
++
++    /// <summary>
++    /// <see cref="TaskCount"/>개 작업이 공통 시작 신호에 맞춰 동시에 출발해 증감을 뒤섞어 적용합니다.
++    /// </summary>
++    /// <param name="state">갱신 대상 상태입니다.</param>
++    /// <param name="increments">작업 하나가 수행할 더하기 횟수입니다.</param>
++    /// <param name="decrements">작업 하나가 수행할 빼기 횟수입니다.</param>
++    /// <remarks>
++    /// <b>[정지 상태 보장]</b> 반환 시점에는 모든 작업이 완료돼 있으므로, 호출자는 두 값을 함께 단언해도 됩니다.
++    /// </remarks>
++    private static async Task RunConcurrentlyAsync(CounterState state, int increments, int decrements)
++    {
++        // TaskCompletionSource<bool>: 모든 작업이 하나의 Task를 await하다 동시에 풀려나는 출발 게이트.
++        // RunContinuationsAsynchronously: TrySetResult 호출 스레드에서 N개 작업이 인라인 직렬 실행되는 것을 막아
++        //   실제로 스레드 풀에 흩어져 병렬 출발하게 한다(이 옵션이 없으면 사실상 순차 실행이라 경합이 재현되지 않는다).
++        var startSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
++        var workers = new Task[TaskCount];
++
++        // bool[] schedule: true=빼기. 생성 후 절대 변경하지 않으므로 모든 작업이 락 없이 동시에 읽어도 안전(불변 공유).
++        // Bresenham 방식으로 빼기를 전 구간에 균등 분산해 정확히 decrements개를 만든다.
++        bool[] schedule = BuildSchedule(increments, decrements);
++
++        for (int i = 0; i < workers.Length; i++)
++        {
++            int index = i;
++            // Task.Run: 스레드 풀 스레드에서 실행해 작업들이 서로 다른 코어에 분산되도록 한다.
++            workers[i] = Task.Run(async () =>
++            {
++                await startSignal.Task.ConfigureAwait(false);
++
++                // 더하기·빼기를 뒤섞어 적용해 같은 캐시라인에 대한 읽기-수정-쓰기가 실제로 겹치게 한다.
++                // 앞뒤로 몰아 실행하면 구간별로 단조 증가/감소만 하여 인터리빙이 약해진다.
++                //
++                // schedule은 불변 공유 배열이고, 작업마다 읽기 시작 위치만 회전시킨다.
++                // 회전은 항목 수를 바꾸지 않으므로 작업별 더하기·빼기 횟수는 정확히 보존된다(기대값의 전제).
++                int steps = schedule.Length;
++                int offset = steps == 0 ? 0 : (int)((long)index * steps / TaskCount);
++
++                for (int k = 0; k < steps; k++)
++                {
++                    int slot = offset + k;
++                    if (slot >= steps) slot -= steps; // 나머지 연산 대신 뺄셈 — hot loop의 div 회피
++                    if (schedule[slot]) state.Decrement();
++                    else state.Increment();
++                }
++            });
++        }
++
++        startSignal.TrySetResult(true);
++
++        // Task.WhenAll: 모든 갱신이 끝난 정지 상태를 만든다. 개별 작업 예외도 여기서 관측된다.
++        await Task.WhenAll(workers);
++    }
++
++    /// <summary>
++    /// 증감 순서 스케줄을 만듭니다. <see langword="true"/>는 빼기, <see langword="false"/>는 더하기이며
++    /// <see langword="true"/>의 개수는 정확히 <paramref name="decrements"/>입니다.
++    /// </summary>
++    private static bool[] BuildSchedule(int increments, int decrements)
++    {
++        int total = checked(increments + decrements);
++        var schedule = new bool[total];
++        if (decrements == 0) return schedule;
++
++        long emitted = 0;
++        for (int k = 0; k < total; k++)
++        {
++            // floor((k+1)*dec/total)이 증가하는 지점에서만 빼기를 낸다 → 정확히 dec개가 균등 분포한다.
++            long next = (long)(k + 1) * decrements / total;
++            if (next > emitted)
++            {
++                schedule[k] = true;
++                emitted = next;
++            }
++        }
++        return schedule;
++    }
++}
+diff --git a/CounterServer/CounterHandler.cs b/CounterServer/CounterHandler.cs
+new file mode 100644
+index 0000000..a176a8e
+--- /dev/null
++++ b/CounterServer/CounterHandler.cs
+@@ -0,0 +1,169 @@
++using System.IO;
++using ServerLib.Core.Memory;
++using ServerLib.Core.Serialization;
++using ServerLib.Core.Serialization.Packets;
++using ServerLib.Interface;
++
++namespace CounterServer;
++
++/// <summary>
++/// 수신 프레임을 검증·라우팅해 <see cref="CounterState"/>를 갱신하거나 현재 값을 응답하는 서버 측 핸들러입니다.
++/// <c>CounterServer/Program.cs</c>의 <c>listener.OnReceived</c>에 그대로 연결되며, E2E 테스트도 같은 인스턴스를 사용합니다.
++/// </summary>
++/// <remarks>
++/// <b>[성능 및 동시성 제약 조건]</b>
++/// <list type="bullet">
++/// <item><description>
++/// <b>Thread Context:</b> ServerLib의 세션별 수신 루프(IO 스레드)에서 직접 호출됩니다.
++/// <b>같은 세션</b>의 패킷은 순차 <c>await</c>로 처리되지만, <b>서로 다른 세션</b>은 동시에 이 메서드에 진입할 수 있습니다
++/// — 그것이 이 예제가 만들려는 경합입니다. 내부에서 동기 블로킹(DB·File IO)을 하면 해당 세션의 수신 루프가 정지합니다.
++/// </description></item>
++/// <item><description>
++/// <b>Thread Safety:</b> Thread-safe. 핸들러 자신은 불변(생성 후 <see cref="State"/> 참조만 보유)이고,
++/// 모든 가변 상태 접근은 <see cref="CounterState"/>의 <c>Interlocked</c> 경로로 위임됩니다.
++/// </description></item>
++/// <item><description>
++/// <b>Blocking / Memory — 증감 경로(Id 3·4):</b> <b>동기 갱신 후 이미 완료된 <see cref="ValueTask"/>를 반환</b>합니다
++/// (<c>ValueTask.CompletedTask</c> = 캐시드 인스턴스). 대기가 없으므로 <b>무할당(Zero-allocation)</b>이며
++/// 패킷마다 상태머신·로그 문자열·작업 Task를 만들지 않습니다.
++/// </description></item>
++/// <item><description>
++/// <b>Blocking / Memory — 조회 응답 경로(Id 18):</b> <c>PacketSendExtensions.SendAsync</c>로 위임합니다.
++/// 커널 송신 버퍼에 여유가 있어 <b>송신이 동기 완료</b>하면 대여 버퍼를 즉시 반납하고 완료된 ValueTask를 반환합니다(무할당).
++/// 버퍼가 포화되어 <b>송신이 미완료</b>면 비동기 완료로 전환되며 이때만 <b>상태머신 1개가 조건부 할당</b>됩니다
++/// (<c>PacketSendExtensions.cs:78-88</c>의 <c>CompleteAsync</c>/<c>AwaitAndReturnAsync</c> 분기).
++/// 어느 경로든 <c>finally</c>에서 <see cref="System.Buffers.ArrayPool{T}"/> 버퍼 반납이 보장됩니다.
++/// </description></item>
++/// <item><description>
++/// <b>Memory Policy — <c>data</c> 소유권:</b> <c>ReadOnlyMemory&lt;byte&gt;</c>는 세션 내부 수신 버퍼의 슬라이스 뷰이며
++/// <b>이 메서드가 반환되면 재사용될 수 있습니다</b>. 따라서 버퍼를 보관하지 않고 동기 구간에서 검증·역직렬화만 수행하며,
++/// 밖으로 내보내는 것은 값 타입(<see cref="long"/>)뿐입니다.
++/// </description></item>
++/// <item><description>
++/// <b>실패 정책:</b> 검증 실패·미지 패킷 ID·조회 응답 송신 실패는 예외로 표면화하며, ServerLib 수신 루프가 이를
++/// 패킷 단위로 격리해 <b>해당 세션만</b> 종료합니다(<c>SocketPipelineSession</c> 디스패치 루프의 catch → <c>OnReceiveError</c> →
++/// <c>OnClientDisconnected</c>). 다른 세션과 카운터 값에는 영향이 없습니다. 자동 재송신은 하지 않습니다.
++/// </description></item>
++/// </list>
++/// </remarks>
++public sealed class CounterHandler
++{
++    /// <summary>미지 패킷 ID를 만났을 때 예외 메시지에 쓰이는 접두사입니다. 테스트가 원인을 식별하는 데 사용합니다.</summary>
++    public const string UnknownPacketMessagePrefix = "알 수 없는 패킷 ID";
++
++    /// <summary>본문 길이 검증에 실패했을 때 예외 메시지에 쓰이는 접두사입니다.</summary>
++    public const string InvalidBodyMessagePrefix = "패킷 본문 길이가 올바르지 않습니다";
++
++    // BinaryPacketSerializer: 내부 가변 상태가 없는 무상태 클래스 → 여러 세션의 IO 스레드가 동시에 호출해도 안전.
++    // static readonly 단일 인스턴스로 공유해 핸들러/패킷마다 직렬화기를 새로 만드는 할당을 제거한다.
++    private static readonly BinaryPacketSerializer Serializer = new();
++
++    /// <summary>이 핸들러가 갱신·조회하는 공유 카운터입니다. 모든 세션이 <b>같은 인스턴스</b>를 봅니다.</summary>
++    public CounterState State { get; }
++
++    /// <summary>지정한 공유 카운터를 갱신하는 핸들러를 만듭니다.</summary>
++    /// <param name="state">모든 세션이 공유할 카운터 상태입니다.</param>
++    /// <exception cref="ArgumentNullException"><paramref name="state"/>가 <see langword="null"/>일 때.</exception>
++    /// <remarks><b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 핸들러 인스턴스 1회 할당.</remarks>
++    public CounterHandler(CounterState state)
++        => State = state ?? throw new ArgumentNullException(nameof(state));
++
++    /// <summary>
++    /// 완전한 패킷 1개를 검증하고, 증감 명령이면 카운터를 갱신하고 조회 요청이면 현재 값을 응답합니다.
++    /// </summary>
++    /// <param name="session">패킷을 보낸 세션입니다. 조회 응답의 송신 대상이기도 합니다.</param>
++    /// <param name="data">헤더(4B)를 포함한 완전한 패킷 1개입니다. <b>이 메서드가 반환되면 무효</b>가 되는 뷰입니다.</param>
++    /// <returns>증감이면 이미 완료된 <see cref="ValueTask"/>, 조회면 응답 송신 완료 시 완료되는 <see cref="ValueTask"/>입니다.</returns>
++    /// <exception cref="InvalidDataException">
++    /// 헤더 파싱 실패, 선언 본문 길이와 실제 길이 불일치, 패킷 ID별 기대 본문 길이 불일치,
++    /// 또는 알 수 없는 패킷 ID일 때 발생합니다. 카운터를 <b>건드리기 전에</b> 던지므로 상태는 불변입니다.
++    /// </exception>
++    /// <remarks>
++    /// <b>[검증을 직접 하는 이유]</b> <c>BinaryPacketSerializer.Deserialize&lt;T&gt;</c>는 헤더를 <b>건너뛰기만</b> 할 뿐
++    /// 타입 ID 일치나 본문 전체 소비를 검사하지 않습니다. 따라서 <c>Deserialize</c>에 넘기기 전에
++    /// ID와 길이를 직접 확인해야 "Id=3 자리에 다른 길이의 본문"같은 프레임이 조용히 통과하는 것을 막을 수 있습니다.
++    /// <br/><b>[Thread Safety]</b> Thread-safe. <b>[Blocking]</b> Non-blocking(위 클래스 <c>remarks</c>의 경로별 완료 특성 참조).
++    /// </remarks>
++    public ValueTask HandleAsync(ISession session, ReadOnlyMemory<byte> data)
++    {
++        // data.Span: ReadOnlyMemory<byte> → ReadOnlySpan<byte> 변환(zero-copy 뷰). 힙 복사 없이 같은 메모리를 참조한다.
++        ReadOnlySpan<byte> frame = data.Span;
++
++        // TryParseHeader: 앞 4B를 BinaryPrimitives로 in-place 해석(무할당). 길이가 헤더보다 짧으면 false.
++        if (!PacketPool.TryParseHeader(frame, out ushort packetId, out int bodyLength))
++            throw new InvalidDataException($"{InvalidBodyMessagePrefix}: 헤더 4바이트를 파싱할 수 없습니다(수신 {frame.Length}B).");
++
++        // 선언 길이 vs 실제 길이 교차 검증. 프레이밍 계층이 헤더의 BodyLength만큼 잘라 주지만,
++        // 그 값을 그대로 신뢰하지 않고 실제 도달 길이와 일치하는지 확인해 파싱 전제를 코드에 못 박는다.
++        if (frame.Length != PacketPool.HeaderSize + bodyLength)
++            throw new InvalidDataException(
++                $"{InvalidBodyMessagePrefix}: 선언 {bodyLength}B, 실제 {frame.Length - PacketPool.HeaderSize}B (Id={packetId}).");
++
++        switch (packetId)
++        {
++            case IncrementPacket.Id:
++                // 증감 명령은 본문이 정확히 0B여야 한다. 0이 아니면 프로토콜 위반 → 카운터를 건드리지 않고 즉시 실패.
++                RequireBodySize(packetId, bodyLength, expected: 0);
++                State.Increment();
++                // ValueTask.CompletedTask: 이미 완료된 캐시드 인스턴스 → 증감 경로 전체가 무할당(상태머신 없음).
++                return ValueTask.CompletedTask;
++
++            case DecrementPacket.Id:
++                RequireBodySize(packetId, bodyLength, expected: 0);
++                State.Decrement();
++                return ValueTask.CompletedTask;
++
++            case CounterQueryPacket.Id:
++                RequireBodySize(packetId, bodyLength, expected: CounterQueryPacket.BodySize);
++                return SendCurrentValueAsync(session);
++
++            default:
++                // 미지 ID는 드롭하지 않고 오류로 처리한다(해당 세션만 종료). 조용한 드롭은 프로토콜 불일치를
++                // 무증상으로 만들어 학습 예제의 진단성을 떨어뜨린다.
++                throw new InvalidDataException($"{UnknownPacketMessagePrefix}: {packetId}");
++        }
++    }
++
++    /// <summary>현재 카운터 스냅샷을 <see cref="CounterValuePacket"/>(Id=19)으로 회신합니다.</summary>
++    /// <param name="session">응답 대상 세션입니다.</param>
++    /// <returns>송신 완료 시 완료되는 <see cref="ValueTask"/>입니다.</returns>
++    /// <remarks>
++    /// <b>[Blocking / Memory]</b> 송신이 동기 완료하면 무할당·즉시 반환, 미완료면 상태머신 1개가 조건부 할당됩니다
++    /// (<c>PacketSendExtensions.cs:78-88</c>).
++    /// <br/><b>[두 값의 비원자성]</b> 아래 두 번의 <c>Interlocked</c> 읽기 <b>사이</b>에 다른 세션이 갱신할 수 있으므로,
++    /// 이 응답의 <c>Value</c>·<c>AppliedOps</c>는 진행 중에는 서로 다른 시점의 스냅샷일 수 있습니다.
++    /// 두 값을 함께 단언하는 것은 모든 증감이 끝난 정지 상태 조회에서만 유효합니다.
++    /// <br/><b>[송신 실패]</b> <see cref="System.Net.Sockets.SocketException"/>이 나도 <b>"상대가 종료했다"고 단정하지 않습니다</b> —
++    /// ServerLib은 송신 시한 만료도 <c>SocketError.TimedOut</c>의 <c>SocketException</c>으로 변환하기 때문입니다.
++    /// 예외는 그대로 전파해 수신 루프가 로그(<c>OnClientError</c>) 후 해당 세션만 종료하게 하며, 자동 재송신은 하지 않습니다
++    /// (재송신하면 중복 적용 여부를 알 수 없게 됩니다).
++    /// </remarks>
++    private ValueTask SendCurrentValueAsync(ISession session)
++    {
++        var response = new CounterValuePacket
++        {
++            Value = State.Value,
++            AppliedOps = State.AppliedOps,
++        };
++
++        // session.SendAsync<CounterValuePacket>(packet): PacketSendExtensions 확장 메서드.
++        //   ① ArrayPool<byte>.Shared.Rent(4+16): TLS 슬롯 → 공유 풀 순서로 버퍼를 대여(new byte[] 회피).
++        //   ② Serialize: 대여 버퍼에 헤더(4B)+본문(16B)을 SpanWriter(ref struct, 스택)로 기록 — Zero-allocation.
++        //   ③ ISession.SendAsync: _socket.SendAsync()로 커널 송신 버퍼에 직접 기록(Non-blocking, 포화 시에만 비동기 대기).
++        //   ④ 동기 완료 시 버퍼 즉시 반납(무할당), 비동기 완료 시 상태머신 1개 할당 후 finally에서 반납.
++        // struct 패킷이므로 T가 값 타입으로 특수화되어 박싱이 없다.
++        return session.SendAsync(response);
++    }
++
++    /// <summary>패킷 ID별 기대 본문 길이를 확인하고, 다르면 <see cref="InvalidDataException"/>을 던집니다.</summary>
++    /// <param name="packetId">검증 대상 패킷 ID입니다.</param>
++    /// <param name="actual">헤더가 선언한 본문 길이입니다.</param>
++    /// <param name="expected">해당 ID의 고정 본문 길이입니다.</param>
++    /// <exception cref="InvalidDataException">길이가 일치하지 않을 때.</exception>
++    /// <remarks><b>[Memory]</b> 일치하는 정상 경로는 무할당(예외 메시지 문자열은 실패 시에만 생성). <b>[Blocking]</b> Non-blocking.</remarks>
++    private static void RequireBodySize(ushort packetId, int actual, int expected)
++    {
++        if (actual != expected)
++            throw new InvalidDataException($"{InvalidBodyMessagePrefix}: Id={packetId}는 {expected}B여야 하는데 {actual}B입니다.");
++    }
++}
+diff --git a/CounterServer/CounterServer.csproj b/CounterServer/CounterServer.csproj
+new file mode 100644
+index 0000000..3359007
+--- /dev/null
++++ b/CounterServer/CounterServer.csproj
+@@ -0,0 +1,13 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType>
++    <TargetFramework>net10.0</TargetFramework>
++    <Nullable>enable</Nullable>
++    <ImplicitUsings>enable</ImplicitUsings>
++    <RootNamespace>CounterServer</RootNamespace>
++  </PropertyGroup>
++  <ItemGroup>
++    <!-- ServerLib를 소스 참조: 동일 솔루션 내 라이브러리를 DLL이 아닌 소스로 빌드하여 IntelliSense·디버깅 지원 -->
++    <ProjectReference Include="..\ServerLib\ServerLib.csproj" />
++  </ItemGroup>
++</Project>
+diff --git a/CounterServer/CounterState.cs b/CounterServer/CounterState.cs
+new file mode 100644
+index 0000000..70783fe
+--- /dev/null
++++ b/CounterServer/CounterState.cs
+@@ -0,0 +1,101 @@
++namespace CounterServer;
++
++/// <summary>
++/// 여러 세션이 <b>동시에 갱신하는 단 하나의 공유 카운터</b>입니다. 이 예제의 경합(contention) 지점 그 자체입니다.
++/// </summary>
++/// <remarks>
++/// <b>[성능 및 동시성 제약 조건]</b>
++/// <list type="bullet">
++/// <item><description>
++/// <b>Thread Safety:</b> <b>Thread-safe.</b> 모든 갱신·조회가 <see cref="Interlocked"/> 원자 연산이므로
++/// 서로 다른 세션의 IO 스레드에서 동시에 호출해도 갱신 유실(lost update)이 발생하지 않습니다.
++/// 전통적 락(<c>lock</c>/<c>Monitor</c>)을 쓰지 않는 이유: 임계 구간이 "메모리 워드 1개 증감"뿐이라
++/// 모니터 진입·이탈 비용과 경합 시 커널 대기 전환 비용이 연산 자체보다 훨씬 큽니다.
++/// <c>Interlocked</c>는 CPU의 <c>lock xadd</c> 명령 하나로 캐시라인을 배타 소유(RFO)해 갱신하므로
++/// 컨텍스트 스위치 없이 완결됩니다.
++/// </description></item>
++/// <item><description>
++/// <b>Memory Allocation:</b> Zero-allocation. 갱신·조회 경로에 힙 할당이 전혀 없습니다
++/// (필드는 인스턴스 생성 시 1회 확보된 <see cref="long"/> 2개뿐).
++/// </description></item>
++/// <item><description>
++/// <b>Blocking:</b> Non-blocking. 모든 멤버가 즉시 반환합니다. 대기·큐잉·비동기 완료가 없습니다.
++/// </description></item>
++/// <item><description>
++/// <b>두 값의 원자성(중요):</b> <see cref="Value"/>와 <see cref="AppliedOps"/> <b>각각</b>은 원자적으로 읽히지만
++/// <b>둘을 한 번에 읽는 것은 원자적이지 않습니다</b>. 갱신이 진행 중이면 두 값이 서로 다른 시점의 스냅샷일 수 있습니다.
++/// 따라서 <b>두 값을 함께 단언하는 것은 모든 증감이 끝난 정지 상태에서만</b> 유효합니다
++/// (클라이언트의 "전 연결 확인 응답 수신 → 최종 조회" 배리어 이후).
++/// </description></item>
++/// <item><description>
++/// <b>인스턴스 필드인 이유:</b> <c>static</c>으로 두면 같은 프로세스의 테스트들이 카운터를 공유해
++/// 병렬 실행 시 서로 오염됩니다. 서버 1개 = 상태 1개로 두어 리스너 인스턴스 단위 격리를 보장합니다.
++/// </description></item>
++/// </list>
++/// </remarks>
++public sealed class CounterState
++{
++    // long _value: Interlocked 대상 필드. 64비트 값이라 32비트 프로세스에서는 일반 읽기/쓰기가 원자적이지 않아
++    // 상·하위 워드가 찢어진(torn) 값이 보일 수 있다. Interlocked.Increment/Decrement/Read는 플랫폼 폭과 무관하게
++    // 단일 원자 연산(x86-64는 lock xadd / lock cmpxchg8b)으로 처리되므로 찢김과 갱신 유실을 동시에 막는다.
++    // volatile을 쓰지 않는 이유: volatile은 가시성·재정렬만 다루고 read-modify-write의 원자성은 보장하지 않는다.
++    private long _value;
++
++    // long _appliedOps: 실제 적용된 증감 op 수. _value와 마찬가지로 Interlocked 전용 필드다.
++    // _value와 별개의 필드로 두는 이유: 두 값을 하나의 long에 비트 패킹하면 단일 CAS로 원자적 쌍 읽기가 가능하지만,
++    // 32비트씩으로 좁아져 학습 예제의 값 범위(long)를 잃는다. 이 예제는 정지 상태 단언만 요구하므로
++    // 필드를 분리하고 "쌍의 비원자성"을 문서로 못 박는 쪽을 택했다.
++    private long _appliedOps;
++
++    /// <summary>현재 카운터 값을 원자적으로 읽어 반환합니다.</summary>
++    /// <value>더하기 1회당 +1, 빼기 1회당 −1이 누적된 순(net) 값입니다.</value>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> Thread-safe. <b>[Memory]</b> Zero-allocation. <b>[Blocking]</b> Non-blocking(즉시 반환).
++    /// <br/>동시 갱신 중에 읽으면 "그 시점의 유효한 값"이지 "최종값"이 아닙니다.
++    /// </remarks>
++    // Interlocked.Read(ref long): 64비트 읽기 자체를 원자화한다. 단순 `_value` 읽기는 32비트 런타임에서
++    // 두 번의 32비트 로드로 쪼개져 찢긴 값을 볼 수 있으므로 읽기 경로도 Interlocked로 통일한다.
++    public long Value => Interlocked.Read(ref _value);
++
++    /// <summary>지금까지 실제로 적용된 증감 연산의 총 횟수를 원자적으로 읽어 반환합니다.</summary>
++    /// <value>더하기 횟수 + 빼기 횟수. 조회 요청·검증 실패로 드롭된 패킷은 포함하지 않습니다.</value>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> Thread-safe. <b>[Memory]</b> Zero-allocation. <b>[Blocking]</b> Non-blocking(즉시 반환).
++    /// <br/><see cref="Value"/>가 0일 때 "상쇄된 것"인지 "아무것도 처리되지 않은 것"인지 구분해 줍니다.
++    /// </remarks>
++    public long AppliedOps => Interlocked.Read(ref _appliedOps);
++
++    /// <summary>카운터를 원자적으로 1 증가시키고, 적용 연산 수를 1 증가시킵니다.</summary>
++    /// <returns>증가 <b>직후</b>의 카운터 값입니다. 다른 세션이 곧바로 갱신할 수 있으므로 "현재 값"의 보증은 아닙니다.</returns>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> Thread-safe. 여러 IO 스레드가 동시에 호출해도 증가분이 유실되지 않습니다.
++    /// <br/><b>[Memory Allocation]</b> Zero-allocation.
++    /// <br/><b>[Blocking]</b> Non-blocking. 즉시 반환합니다(락 대기 없음).
++    /// <br/><b>[비원자 쌍]</b> <c>_value</c>와 <c>_appliedOps</c>는 <b>서로 다른 두 원자 연산</b>으로 갱신되므로
++    /// 그 사이에 다른 스레드가 조회하면 "값은 반영됐지만 연산 수는 아직"인 중간 상태를 볼 수 있습니다.
++    /// 최종 검증은 정지 상태에서만 수행하십시오.
++    /// </remarks>
++    public long Increment()
++    {
++        // Interlocked.Increment: lock xadd 1회. 읽기→더하기→쓰기 사이에 다른 코어가 끼어들 수 없어
++        // `_value++`(비원자 3단계)에서 발생하는 갱신 유실이 원천 차단된다. 이 예제가 결정적 기대값을 내는 근거.
++        long updated = Interlocked.Increment(ref _value);
++        // 검증을 통과해 실제 적용된 op만 계수한다. 드롭된 패킷은 이 줄에 도달하지 않는다.
++        Interlocked.Increment(ref _appliedOps);
++        return updated;
++    }
++
++    /// <summary>카운터를 원자적으로 1 감소시키고, 적용 연산 수를 1 증가시킵니다.</summary>
++    /// <returns>감소 <b>직후</b>의 카운터 값입니다. 다른 세션이 곧바로 갱신할 수 있으므로 "현재 값"의 보증은 아닙니다.</returns>
++    /// <remarks>
++    /// <b>[Thread Safety]</b> Thread-safe. <b>[Memory Allocation]</b> Zero-allocation. <b>[Blocking]</b> Non-blocking.
++    /// <br/><b>[주의]</b> 감소여도 <see cref="AppliedOps"/>는 <b>증가</b>합니다(수행한 연산의 개수를 세는 값이므로).
++    /// </remarks>
++    public long Decrement()
++    {
++        // Interlocked.Decrement: lock xadd(-1) 1회. Increment와 동일한 원자성 보증.
++        long updated = Interlocked.Decrement(ref _value);
++        Interlocked.Increment(ref _appliedOps);
++        return updated;
++    }
++}
+diff --git a/CounterServer/Program.cs b/CounterServer/Program.cs
+new file mode 100644
+index 0000000..cb8fa4a
+--- /dev/null
++++ b/CounterServer/Program.cs
+@@ -0,0 +1,133 @@
++// =============================================================================
++// CounterServer — 경합(contention) 시연용 공유 카운터 서버 예제
++// =============================================================================
++// 동작: 127.0.0.1:9300에서 TCP 연결을 수락하고, 모든 세션이 공유하는 카운터 하나를
++//       IncrementPacket(Id=3)로 +1, DecrementPacket(Id=4)로 −1 갱신합니다.
++//       CounterQueryPacket(Id=18)을 받으면 현재 값을 CounterValuePacket(Id=19)으로 회신합니다.
++//
++// 학습 포인트:
++//   여러 연결이 동시에 같은 메모리를 갱신해도(=경합), 갱신을 Interlocked 원자 연산으로 하면
++//   최종값이 "더한 횟수 − 뺀 횟수"라는 결정적 기대값과 정확히 일치합니다.
++//   경합 자체는 없앨 수 없고, 경합 하에서도 정확하도록 만드는 것이 핵심입니다.
++//
++// 실행법:
++//   dotnet run --project CounterServer      (먼저 실행)
++//   dotnet run --project CounterClient      (다른 터미널에서 실행 → PASS/FAIL 출력)
++//   종료: 아무 키나 누르세요.
++//
++// ※ 검증은 "새로 시작한 서버 + 클라이언트 1회 실행"을 전제로 합니다.
++//   카운터는 프로세스 수명 동안 누적되므로, 다시 검증하려면 서버를 재시작하십시오.
++//
++// ServerLib 핵심 흐름:
++//   ServerNet.CreateListener()   — 리스너 팩토리(구현체 SocketPipelineListener는 internal)
++//   listener.On* = ...          — 콜백 등록 (Start() 전에 반드시 완료)
++//   listener.Start(port, addr)  — TCP accept 루프 시작 (Non-blocking)
++//   OnReceived(session, data)   — 완전한 패킷 1개 단위로 호출 (프레이밍 자동 처리)
++//   listener.Stop()             — 서버 종료
++// =============================================================================
++
++using System.Net;
++using CounterServer;
++using ServerLib;
++using ServerLib.Interface;
++
++// ── 0. 공유 상태 준비 ─────────────────────────────────────────────────────────
++//
++// CounterState: 이 예제의 경합 지점. 모든 세션이 이 인스턴스 하나를 동시에 갱신합니다.
++//   내부 필드는 Interlocked 전용 long 2개(Value·AppliedOps)이며 갱신·조회 모두 무할당·논블로킹입니다.
++//   static이 아닌 인스턴스로 두는 이유: 서버 1개 = 카운터 1개로 격리해 테스트가 서로 오염되지 않게 하기 위함입니다.
++var state = new CounterState();
++
++// CounterHandler: 프레임 검증(ID·본문 길이) → 라우팅 → 상태 갱신/조회 응답을 담당합니다.
++//   불변 객체(생성 후 state 참조만 보유)이므로 여러 IO 스레드가 동시에 HandleAsync를 호출해도 안전합니다.
++var handler = new CounterHandler(state);
++
++// ── 1. 리스너 생성 ────────────────────────────────────────────────────────────
++//
++// ServerNet.CreateListener():
++//   내부 구현체 SocketPipelineListener(internal)를 생성해 IServerListener로 반환합니다.
++//   → 소비자는 구체 타입을 몰라도 인터페이스만으로 서버를 제어합니다(캡슐화).
++//   → 즉시 반환(Non-blocking). Start() 전까지 소켓·accept 루프가 시작되지 않습니다.
++IServerListener listener = ServerNet.CreateListener();
++
++// ── 2. 콜백 등록 (Start() 호출 전에 완료해야 합니다) ─────────────────────────
++//
++// Start() 이후 콜백을 설정하면 InvalidOperationException이 발생합니다.
++// → ServerLib가 레이스 컨디션 없이 콜백을 읽기 위해 시작 이후 변경을 금지합니다.
++
++// OnClientConnected: 새 TCP 연결이 수락(accept)된 직후 호출됩니다.
++listener.OnClientConnected = (ISession session) =>
++{
++    Console.WriteLine($"[연결] {session.RemoteEndPoint}  세션={session.SessionId:N}");
++    // ValueTask.CompletedTask: 이미 완료된 캐시드 인스턴스 → Task.CompletedTask와 달리 참조 할당조차 없는 무할당 경로.
++    return ValueTask.CompletedTask;
++};
++
++// OnClientDisconnected: 정상/비정상 종료 후 호출됩니다.
++// 프로토콜 위반으로 세션이 끊긴 경우에도(OnClientError 다음에) 여기로 옵니다.
++listener.OnClientDisconnected = (ISession session) =>
++{
++    Console.WriteLine($"[해제] {session.RemoteEndPoint}  세션={session.SessionId:N}");
++    return ValueTask.CompletedTask;
++};
++
++// OnClientError: 패킷 파싱 실패, OnReceived 핸들러 예외(= CounterHandler의 InvalidDataException),
++//   그리고 조회 응답 송신 실패 시 호출됩니다.
++// ※ SocketException이 보인다고 해서 "상대가 종료했다"고 단정하면 안 됩니다.
++//   ServerLib은 송신 시한 만료도 SocketError.TimedOut의 SocketException으로 변환하기 때문입니다.
++//   원인과 무관하게 정책은 동일합니다: 로그를 남기고 해당 세션만 종료하며, 자동 재송신은 하지 않습니다
++//   (재송신하면 증감이 중복 적용됐는지 알 수 없게 됩니다).
++listener.OnClientError = (ISession session, Exception ex) =>
++{
++    Console.WriteLine($"[오류] {session.RemoteEndPoint}: {ex.GetType().Name} — {ex.Message}");
++    Console.WriteLine("       → 이 세션만 종료합니다. 카운터 값과 다른 세션에는 영향이 없습니다.");
++    return ValueTask.CompletedTask;
++};
++
++// ── 3. 수신 콜백 (경합 지점) ─────────────────────────────────────────────────
++//
++// OnReceived: 완전한 패킷 1개가 도착할 때마다 호출됩니다.
++//
++// [프레이밍 보장]
++//   SocketPipelineSession이 System.IO.Pipelines의 PipeReader로 TCP 스트림을 패킷 단위로 조립합니다.
++//   부분 패킷은 다음 ReadAsync에서 이어붙여 처리하므로, 이 콜백은 항상 '완전한 패킷 1개분'을 받습니다.
++//
++// [동시성]
++//   같은 세션의 패킷은 수신 루프가 순차 await로 처리하지만,
++//   서로 다른 세션은 각자의 IO 스레드에서 동시에 이 콜백에 진입할 수 있습니다 — 그것이 이 예제의 경합입니다.
++//
++// [data 소유권]
++//   ReadOnlyMemory<byte>는 내부 수신 버퍼의 슬라이스 뷰입니다. 콜백 반환 후 재사용될 수 있으므로
++//   보관하지 않고, 동기 구간에서 검증·역직렬화만 수행합니다(핸들러가 밖으로 내보내는 것은 long 값뿐).
++listener.OnReceived = handler.HandleAsync;
++
++// ── 4. 서버 시작 ──────────────────────────────────────────────────────────────
++//
++// listener.Start(port, bindAddress):
++//   - 지정 포트에 소켓을 바인딩하고 listen(backlog)을 호출합니다.
++//   - TCP accept 루프를 백그라운드 Task로 시작합니다 (Non-blocking: 이 줄 이후 즉시 다음 코드 실행).
++// IPAddress.Loopback: 루프백(127.0.0.1) 전용 바인딩 → 외부 네트워크에 노출되지 않습니다.
++//   Start(9300) 단일 인수 오버로드는 IPAddress.Any(전체 인터페이스)에 바인딩하므로,
++//   인증 없는 이 학습용 카운터가 외부에서 임의 갱신될 수 있습니다. 반드시 주소를 명시하십시오.
++// MaxConnections·IdleTimeout 미설정: 학습용 예제이므로 기본값(무제한·유휴 스윕 비활성)을 씁니다.
++//   실제 서비스라면 listener.MaxConnections = 100; listener.IdleTimeout = TimeSpan.FromSeconds(30);
++listener.Start(9300, IPAddress.Loopback);
++Console.WriteLine("경합 카운터 서버 시작 — 127.0.0.1:9300  [종료: 아무 키나 누르세요]");
++Console.WriteLine("  더하기=IncrementPacket(Id=3)  빼기=DecrementPacket(Id=4)  조회=CounterQueryPacket(Id=18)");
++Console.WriteLine("───────────────────────────────────────");
++
++// 메인 스레드를 블로킹해 서버를 유지합니다. 키 입력 시 종료 흐름으로 진입합니다.
++Console.ReadKey(intercept: true);
++Console.WriteLine();
++
++// ── 5. 서버 종료 ──────────────────────────────────────────────────────────────
++//
++// listener.Stop():
++//   - 새 연결 수락을 중단합니다(_cts.Cancel() + 리슨 소켓 Dispose).
++//   - 활성 세션을 DisposeAsync().GetResult()로 순차 정리합니다(동기 블로킹).
++listener.Stop();
++
++// 참고용 출력입니다 — 검증 판정이 아닙니다.
++// 이 시점에 모든 클라이언트가 송신을 끝냈다는 보장이 없어(정지 상태가 아님) 기대값과 비교할 수 없습니다.
++// PASS/FAIL 판정은 클라이언트가 "전 연결 확인 응답 → 최종 조회" 배리어를 거친 뒤에만 내립니다.
++Console.WriteLine($"서버 종료. (참고용) 카운터 값 = {state.Value}");
+diff --git a/ServerLib/Core/Serialization/Packets/CounterQueryPacket.cs b/ServerLib/Core/Serialization/Packets/CounterQueryPacket.cs
+new file mode 100644
+index 0000000..aed2e23
+--- /dev/null
++++ b/ServerLib/Core/Serialization/Packets/CounterQueryPacket.cs
+@@ -0,0 +1,54 @@
++namespace ServerLib.Core.Serialization.Packets;
++
++/// <summary>
++/// 클라이언트가 서버의 공유 카운터 현재 값을 조회하기 위해 보내는 요청 패킷입니다. 본문 없음(0바이트).
++/// 서버는 이 요청에 <see cref="CounterValuePacket"/>(Id=19)으로 응답합니다.
++/// </summary>
++/// <remarks>
++/// <b>[성능 및 동시성 제약 조건]</b>
++/// <list type="bullet">
++/// <item><description>
++/// <b>Thread Safety:</b> 필드가 없는 순수 마커 패킷이므로 상태 경합이 존재하지 않습니다(Thread-safe).
++/// 동일 인스턴스를 여러 스레드가 동시에 직렬화해도 안전합니다.
++/// </description></item>
++/// <item><description>
++/// <b>Memory Allocation:</b> Zero-allocation. struct이므로 <c>Deserialize&lt;CounterQueryPacket&gt;</c>의
++/// <c>new T()</c>가 스택/인라인 생성되어 힙 할당이 발생하지 않습니다(class였다면 조회마다 Gen0 압력).
++/// 본문이 0바이트라 와이어 크기는 헤더 4바이트(<c>PacketPool.HeaderSize</c>)뿐입니다.
++/// </description></item>
++/// <item><description>
++/// <b>Blocking:</b> Non-blocking. 직렬화·역직렬화 모두 즉시 반환합니다.
++/// </description></item>
++/// <item><description>
++/// <b>완료 확인 용도:</b> 서버 세션 수신 루프가 패킷별 콜백을 <b>순차</b> await하므로
++/// (<c>SocketPipelineSession.DispatchPacketAsync</c>), 이 조회에 대한 응답이 도착했다는 것은
++/// <b>같은 연결에서 앞서 보낸 모든 증감 명령이 이미 적용되었다</b>는 뜻입니다.
++/// 다른 연결의 처리 완료는 보장하지 않으므로, 전역 최종값 검증은 모든 연결의 확인 응답을 받은
++/// 뒤(=배리어 이후)에 다시 조회해야 합니다.
++/// </description></item>
++/// </list>
++/// </remarks>
++// struct 선택: 본문 0B의 고빈도 제어 패킷 — 역직렬화 시 힙 할당 0. class면 조회 1회마다 Gen0 객체가 생겨
++// 경합 시연처럼 수천 회 왕복하는 예제에서 불필요한 GC 압력이 누적된다.
++public struct CounterQueryPacket : IPacket
++{
++    /// <summary>패킷 ID 상수입니다.</summary>
++    public const ushort Id = 18;
++
++    /// <summary>본문 바이트 수 상수입니다. 요청에 필드가 없으므로 0입니다.</summary>
++    public const int BodySize = 0;
++
++    /// <inheritdoc/>
++    public ushort PacketId => Id;
++
++    /// <inheritdoc/>
++    // 본문 없음 — 조회 대상이 서버당 카운터 1개로 고정이라 식별 필드가 필요 없다.
++    // 연결당 미완료 조회를 1개로 제한하므로 요청 ID도 두지 않는다(응답 매칭이 연결 단위로 자명).
++    public int GetBodySize() => BodySize;
++
++    /// <inheritdoc/>
++    public void Serialize(ref SpanWriter writer) { }
++
++    /// <inheritdoc/>
++    public void Deserialize(ref SpanReader reader) { }
++}
+diff --git a/ServerLib/Core/Serialization/Packets/CounterValuePacket.cs b/ServerLib/Core/Serialization/Packets/CounterValuePacket.cs
+new file mode 100644
+index 0000000..507111c
+--- /dev/null
++++ b/ServerLib/Core/Serialization/Packets/CounterValuePacket.cs
+@@ -0,0 +1,77 @@
++namespace ServerLib.Core.Serialization.Packets;
++
++/// <summary>
++/// 서버가 <see cref="CounterQueryPacket"/>(Id=18) 요청에 응답해 공유 카운터의 현재 상태를 돌려주는 패킷입니다.
++/// 본문 16바이트 = <see cref="Value"/>(8B) + <see cref="AppliedOps"/>(8B).
++/// </summary>
++/// <remarks>
++/// <b>[성능 및 동시성 제약 조건]</b>
++/// <list type="bullet">
++/// <item><description>
++/// <b>Thread Safety:</b> IPacket은 순수 데이터 홀더입니다(Not Thread-safe).
++/// 송신 확장(<c>PacketSendExtensions.SendAsync</c>)이 직렬화를 끝내기 전까지 인스턴스를 재사용하지 마십시오.
++/// </description></item>
++/// <item><description>
++/// <b>Memory Allocation:</b> Zero-allocation. struct이므로 역직렬화 시 <c>new T()</c>가 스택/인라인 생성됩니다.
++/// 필드가 전부 고정 크기 <see cref="long"/>이라 문자열처럼 UTF-8 디코딩 힙 할당이 끼어들 여지가 없습니다.
++/// </description></item>
++/// <item><description>
++/// <b>Blocking:</b> Non-blocking. 직렬화·역직렬화 모두 즉시 반환합니다.
++/// </description></item>
++/// <item><description>
++/// <b>두 값의 원자성(중요):</b> 서버는 <see cref="Value"/>와 <see cref="AppliedOps"/>를 각각
++/// <c>Interlocked</c>로 읽지만, <b>두 값을 한 번에 읽는 연산은 원자적이지 않습니다</b>.
++/// 다른 세션이 동시에 증감 중이면 이 패킷의 두 값은 서로 다른 시점의 스냅샷일 수 있습니다.
++/// 따라서 <b>두 값을 함께 단언(assert)하는 것은 모든 증감이 끝난 정지 상태(배리어 이후 최종 조회)에서만</b>
++/// 유효합니다. 진행 중 조회값은 진척 확인·디버깅 참고용으로만 쓰십시오.
++/// </description></item>
++/// </list>
++/// </remarks>
++// struct 선택: 16B 고정 크기 응답 패킷 — 역직렬화 무할당. class였다면 조회 왕복 1회마다 Gen0 객체가 생긴다.
++public struct CounterValuePacket : IPacket
++{
++    /// <summary>패킷 ID 상수입니다.</summary>
++    public const ushort Id = 19;
++
++    /// <summary>본문 바이트 수 상수입니다. <c>long Value(8) + long AppliedOps(8) = 16</c>.</summary>
++    public const int BodySize = 16;
++
++    /// <inheritdoc/>
++    public ushort PacketId => Id;
++
++    /// <summary>
++    /// 조회 시점의 공유 카운터 값입니다. 더하기 1회당 +1, 빼기 1회당 −1이 누적된 순(net) 결과입니다.
++    /// </summary>
++    public long Value { get; set; }
++
++    /// <summary>
++    /// 조회 시점까지 서버가 <b>실제로 적용한 증감 연산의 총 횟수</b>입니다(더하기 + 빼기).
++    /// 조회 패킷·검증 실패로 드롭된 패킷·미지 패킷은 계수하지 않습니다.
++    /// </summary>
++    /// <remarks>
++    /// <see cref="Value"/>만으로는 "더하기 N회 + 빼기 N회"와 "아무 것도 처리하지 않음"이 모두 0으로 보여
++    /// 상쇄에 의한 결함 은폐가 생깁니다. <see cref="AppliedOps"/>는 그 은폐를 깨고,
++    /// FAIL 시 원인을 <i>패킷 미도달</i>(AppliedOps 부족)과 <i>갱신 유실</i>(AppliedOps는 맞는데 Value가 틀림)로
++    /// 분해하는 진단 값입니다.
++    /// </remarks>
++    public long AppliedOps { get; set; }
++
++    /// <inheritdoc/>
++    // 본문: long Value (8B) + long AppliedOps (8B) = 16B 고정.
++    // 고정 크기이므로 수신 측이 bodyLength == 16을 상수로 검증할 수 있다(가변 길이 패킷의 파싱 분기가 불필요).
++    public int GetBodySize() => BodySize;
++
++    /// <inheritdoc/>
++    public void Serialize(ref SpanWriter writer)
++    {
++        writer.WriteInt64(Value);
++        writer.WriteInt64(AppliedOps);
++    }
++
++    /// <inheritdoc/>
++    public void Deserialize(ref SpanReader reader)
++    {
++        Value = reader.ReadInt64();
++        AppliedOps = reader.ReadInt64();
++    }
++}
+diff --git a/plan/contention_counter_0910.md b/plan/contention_counter_0910.md
+new file mode 100644
+index 0000000..01976f4
+--- /dev/null
++++ b/plan/contention_counter_0910.md
+@@ -0,0 +1,277 @@
++# 경합 카운터 서버 (Contention Counter) — 설계 문서
++
++- **날짜:** 2026-09-10
++- **기준 커밋:** `3aa7a80205ae84f96f6fe780a3cbde255178faf0`
++- **개발 방식:** cross-verify 교차 검증 하네스 (Claude 계획 ↔ Codex 계획 → 조정 → 통합 계획 `13_final_plan.md` → 구현)
++- **관련 산출물:** `_workspace/cross/20260910_163212_counter-server/`
++
++---
++
++## 1. 배경 및 목적
++
++여러 클라이언트가 **하나의 공유 변수**를 동시에 갱신할 때 무슨 일이 일어나는지를 실제 소켓 위에서 보여 주는 **학습용 예제**가 필요했다. 기존 `EchoServer`/`EchoClient`는 요청-응답 1:1 구조라 세션 간 공유 상태가 없어 경합을 다루지 못한다.
++
++이 예제가 가르치려는 것은 다음 한 문장이다.
++
++> **경합은 없앨 수 없다. 경합 하에서도 정확하도록 만드는 것이 서버 프로그래밍이다.**
++
++8개 연결이 초당 십수만 건으로 같은 메모리 워드를 두들겨도, 갱신이 `Interlocked` 원자 연산이면 최종값은 **항상 정확히** `연결 수 × (더하기 − 빼기)`가 된다. 이 결정성이 눈으로 확인되는 것이 학습 포인트다.
++
++부수적으로 이 작업은 **cross-verify 하네스의 첫 실전 검증 대상**이기도 했다.
++
++### 해결한 문제
++
++| 문제 | 이 예제의 답 |
++|---|---|
++| 다중 세션이 같은 상태를 갱신하면 갱신이 유실되는가? | `Interlocked.Increment/Decrement`(단일 `lock xadd`)로 유실 0 |
++| "최종값"을 언제 읽어야 의미가 있는가? | **연결별 완료 확인 → 전 연결 확인 후 최종 조회**(배리어). 조회 응답은 그 시점의 값일 뿐이다 |
++| 최종값이 0일 때 "상쇄"와 "미처리"를 어떻게 구분하는가? | `AppliedOps`(적용된 증감 op 총수)를 함께 계수·검증 |
++
++---
++
++## 2. 설계 결정
++
++### 2.1 채택안과 대안 비교
++
++| 항목 | 채택 | 대안 | 채택 이유 |
++|---|---|---|---|
++| 증감 명령 패킷 | 기존 `IncrementPacket`(Id=3)·`DecrementPacket`(Id=4) **재사용** | 수량 필드를 가진 새 패킷 신설 | 두 패킷이 이미 "서버 변수를 1 증감"이라는 정확히 같은 의미로 존재했고 사용처가 없었다. 수량 필드는 경합 정확성 시연에 기여하지 않고 와이어 포맷만 늘린다 |
++| 조회 방식 | `CounterQueryPacket`(Id=18, 0B) → `CounterValuePacket`(Id=19, 16B) 요청-응답 | 서버가 주기적으로 브로드캐스트 | 브로드캐스트는 "언제의 값인가"가 불분명해 **완료 확인(배리어)** 으로 쓸 수 없다. 요청-응답은 세션별 순차 처리 보장 덕에 그 자체가 배리어가 된다 |
++| 응답 본문 | **16B** = `long Value` + `long AppliedOps` | 8B = `long Value`만 | `Value`만 보면 더하기 N + 빼기 N과 "아무것도 처리 안 함"이 똑같이 0이다. `AppliedOps`가 상쇄 은폐를 깨고, FAIL 시 원인을 *패킷 미도달* vs *갱신 유실*로 분해한다 |
++| 공유 상태 | 서버 **인스턴스**당 `CounterState` 1개 | `static` 필드 | `static`이면 같은 프로세스의 테스트들이 카운터를 공유해 병렬 실행 시 서로 오염된다 |
++| 동시성 제어 | `Interlocked` (lock-free) | `lock`/`Monitor` | 임계 구간이 "메모리 워드 1개 증감"뿐이다. 모니터 진입·이탈 비용과 경합 시 커널 대기 전환 비용이 연산 자체보다 훨씬 크다. `Interlocked`는 `lock xadd` 하나로 캐시라인을 배타 소유(RFO)해 컨텍스트 스위치 없이 완결한다 |
++| 조회 대기 매칭 | 연결당 **미완료 조회 1건**으로 제한 | 요청 ID 필드 추가 | 1건 제한이면 응답 매칭이 연결 단위로 자명해져 요청 ID·본문이 불필요하다 |
++| 요청 검증 위치 | 핸들러가 **직접** id·본문 길이 검증 | `Deserialize<T>`에 위임 | `BinaryPacketSerializer.Deserialize<T>`는 헤더를 **건너뛰기만** 하고 타입 ID 일치나 본문 전량 소비를 검사하지 않는다. 위임하면 "Id=3 자리에 다른 길이의 본문"이 조용히 통과한다 |
++| 예제 타입 가시성 | `CounterState`·`CounterHandler`·`CounterScenario` **public** | `internal` + `InternalsVisibleTo` | 두 exe에 `InternalsVisibleTo`를 걸면 각 exe의 암묵 `internal partial class Program` 두 개가 동시에 테스트 어셈블리에 노출되어 `Program` 비수식 참조 시 **CS0104(모호한 참조)** 가 된다. 예제 exe는 NuGet 배포 대상(`pack.ps1`)이 아니므로 public화해도 공개 표면이 넓어지지 않고, **ServerLib의 Transport `internal` 캡슐화는 그대로 유지**된다 |
++| 테스트 위치 | 신규 `CounterExample.Tests` | 기존 `EchoExample.Tests`에 추가 | 에코 테스트는 `ServerLib` 하나만 참조하는 구성이다. 여기에 예제 exe 2개 참조를 얹으면 에코 테스트의 책임과 의존성이 오염된다 |
++| 실패 정책 | 프로토콜 위반 → 예외 → **해당 세션만** 종료 | 조용한 드롭 | 조용한 드롭은 프로토콜 불일치를 무증상으로 만들어 학습 예제의 진단성을 떨어뜨린다. `SocketPipelineSession` 디스패치 루프가 패킷 단위로 예외를 격리하므로 다른 세션·카운터는 무영향이다 |
++
++### 2.2 완료 확인(배리어)이 정확성의 핵심인 이유
++
++서버 세션 수신 루프는 **같은 세션**의 패킷을 순차 `await`로 처리한다(`SocketPipelineSession`의 디스패치 루프). 따라서
++
++- 연결 A가 `[증감 ×1,750][조회]` 순으로 보냈다면, **조회 응답이 도착했다는 것 = A의 1,750회가 모두 적용됐다**는 뜻이다.
++- 그러나 그것은 **A에 대해서만** 참이다. B~H는 아직 처리 중일 수 있다.
++
++그래서 검증은 두 단계다.
++
++```
++[1단계] 각 연결: 마지막 증감 → 조회 → 응답 수신   (연결별 완료 확인)
++[2단계] 8개 연결 모두 1단계 통과 후 → 최종 조회 1회 (전역 정지 상태)
++```
++
++**해서는 안 되는 것**
++- 송신 완료(`await SendAsync`)만 기다리고 바로 조회 — 송신은 커널 버퍼 기록일 뿐 서버 처리 완료가 아니다.
++- 중간 조회 응답 중 "마지막에 도착한 값"을 최종값으로 사용 — 다른 연결의 처리가 남아 있을 수 있다.
++
++### 2.3 `Value`/`AppliedOps` 쌍의 비원자성
++
++두 값은 **각각** 원자적으로 읽히지만 **둘을 한 번에** 읽는 연산은 원자적이지 않다. 갱신 진행 중에는 서로 다른 시점의 스냅샷일 수 있다.
++
++→ **두 값을 함께 단언하는 것은 배리어 이후 정지 상태에서만 유효하다.** 이 제약을 `CounterState`·`CounterValuePacket`·`CounterSnapshot`의 `<remarks>`에 모두 명시했다.
++
++두 값을 하나의 `long`에 비트 패킹하면 단일 CAS로 원자적 쌍 읽기가 가능하지만, 각 필드가 32비트로 좁아져 학습 예제의 값 범위를 잃는다. 정지 상태 단언만 필요하므로 필드 분리 + 문서화를 택했다.
++
++---
++
++## 3. 컴포넌트 구조
++
++```
++ClaudeCodeStudy/
++├── ServerLib/Core/Serialization/Packets/
++│   ├── CounterQueryPacket.cs      (신규) Id=18, 본문 0B — struct
++│   └── CounterValuePacket.cs      (신규) Id=19, 본문 16B — struct
++├── CounterServer/                 (신규 프로젝트, 콘솔 exe)
++│   ├── CounterState.cs            공유 카운터 — Interlocked long 2개
++│   ├── CounterHandler.cs          프레임 검증 → 라우팅 → 갱신/조회 응답
++│   └── Program.cs                 127.0.0.1:9300 리스너 와이어링 (예제 본체)
++├── CounterClient/                 (신규 프로젝트, 콘솔 exe)
++│   ├── CounterScenario.cs         CounterSnapshot / Options / Result / RunAsync 실행기
++│   └── Program.cs                 설정 상수 → RunAsync → PASS/FAIL·종료 코드
++└── CounterExample.Tests/          (신규 프로젝트, xUnit)
++    ├── CounterPacketTests.cs      와이어 포맷 (Fact 6 + Theory 6케이스 = 12)
++    ├── CounterStateTests.cs       상태 동시 갱신 (6)
++    └── CounterEndToEndTests.cs    실소켓 E2E·실패 경로 (8)   ── 합계 26
++```
++
++### 의존 관계
++
++```
++CounterExample.Tests ──┬──> CounterServer ──> ServerLib
++                       ├──> CounterClient ──> ServerLib
++                       └──> ServerLib
++```
++
++- 예제 → ServerLib 단방향. ServerLib은 예제를 참조하지 않는다.
++- 테스트는 **실제** `CounterHandler`(서버 알고리즘)와 **실제** `CounterScenario.RunAsync`(클라이언트 알고리즘)를 호출한다. 알고리즘을 복제하면 예제와 테스트가 갈라져 "테스트는 통과하는데 예제는 틀린" 상태가 생긴다.
++- `InternalsVisibleTo`는 사용하지 않는다(§2.1 참조).
++
++### 와이어 포맷
++
++```
++헤더 4B: [PacketId(2, LE)] [BodyLength(2, LE)]
++
++Id=3  IncrementPacket    본문 0B    카운터 +1
++Id=4  DecrementPacket    본문 0B    카운터 −1
++Id=18 CounterQueryPacket 본문 0B    현재 값 조회
++Id=19 CounterValuePacket 본문 16B   [long Value(8)] [long AppliedOps(8)]
++```
++
++기존 사용 ID(1~17)·하트비트 예약(0xFFFE/0xFFFF)과 충돌하지 않는다. 테스트용 미지 ID로는 250을 쓴다 — 서버는 정상 PING(0xFFFE)만 하트비트로 가로채므로 그 외 ID는 앱 경로(`CounterHandler`)에 도달한다.
++
++---
++
++## 4. 핵심 API
++
++### 4.1 서버 (`CounterServer/Program.cs`)
++
++```csharp
++var state   = new CounterState();          // 이 예제의 경합 지점 — 모든 세션이 이 인스턴스 하나를 갱신
++var handler = new CounterHandler(state);
++
++IServerListener listener = ServerNet.CreateListener();
++listener.OnReceived  = handler.HandleAsync; // 예제와 테스트가 공유하는 바로 그 핸들러
++listener.OnClientError = (session, ex) => { /* 로그 후 해당 세션만 종료 */ };
++listener.Start(9300, IPAddress.Loopback);   // 루프백 전용 — 인증 없는 카운터를 외부에 노출하지 않는다
++```
++
++### 4.2 핸들러 라우팅
++
++```csharp
++if (!PacketPool.TryParseHeader(frame, out ushort id, out int bodyLength)) throw ...;
++if (frame.Length != PacketPool.HeaderSize + bodyLength) throw ...;   // 선언 vs 실제 교차 검증
++
++switch (id)
++{
++    case IncrementPacket.Id:    RequireBodySize(id, bodyLength, 0); State.Increment(); return ValueTask.CompletedTask;
++    case DecrementPacket.Id:    RequireBodySize(id, bodyLength, 0); State.Decrement(); return ValueTask.CompletedTask;
++    case CounterQueryPacket.Id: RequireBodySize(id, bodyLength, 0); return SendCurrentValueAsync(session);
++    default: throw new InvalidDataException($"알 수 없는 패킷 ID: {id}");
++}
++```
++
++**경로별 완료·할당 특성이 다르다**(XML 문서에 분리 서술).
++
++| 경로 | 완료 | 할당 |
++|---|---|---|
++| 증감 (Id 3·4) | 동기 갱신 후 이미 완료된 `ValueTask` | **무할당** (상태머신·로그·작업 Task 없음) |
++| 조회 응답 (Id 18) | 송신 동기 완료 시 즉시, 미완료 시 비동기 | 동기 완료 시 무할당, 미완료 시 **상태머신 1개 조건부** (`PacketSendExtensions.cs:78-88`) |
++
++### 4.3 클라이언트 (`CounterClient/Program.cs`)
++
++```csharp
++var options = new CounterScenarioOptions
++{
++    Host = "127.0.0.1", Port = 9300,
++    ConnectionCount = 8,
++    IncrementsPerConnection = 1_000,
++    DecrementsPerConnection = 750,
++    Timeout = TimeSpan.FromSeconds(30),
++};
++
++CounterScenarioResult result = await CounterScenario.RunAsync(options);
++// result.Passed  ← Value == 2,000  AND  AppliedOps == 14,000
++return result.Passed ? 0 : 1;   // 통신 오류·타임아웃은 예외 → 2
++```
++
++### 4.4 hot loop의 무할당 송신
++
++증감 프레임은 본문이 없어 결과가 항상 동일하다. 실행 전 **1회 직렬화**해 정적 `ReadOnlyMemory<byte>`로 보관하고 재사용한다.
++
++```csharp
++private static readonly ReadOnlyMemory<byte> IncrementFrame = CreateFrame(new IncrementPacket());
++// ...
++await connection.SendFrameAsync(isDecrement ? DecrementFrame : IncrementFrame, ct);
++```
++
++`PacketSendExtensions.SendAsync<T>`를 매번 호출하면 송신마다 ArrayPool Rent/Return + Serialize가 반복된다. 14,000회 루프에서는 프레임 재사용이 명백히 유리하다.
++
++### 4.5 증감 순서 섞기 (Bresenham + 위상 회전)
++
++더하기를 앞에, 빼기를 뒤에 몰면 구간별로 단조 증감만 하여 인터리빙이 약해진다. 빼기를 전 구간에 균등 분산하고, 연결마다 읽기 시작 위치를 회전시킨다. **회전은 항목 수를 바꾸지 않으므로 연결별 더하기·빼기 횟수는 정확히 보존**된다(기대값의 전제).
++
++---
++
++## 5. 변경 파일 목록
++
++### 신규
++
++| 파일 | 내용 |
++|---|---|
++| `ServerLib/Core/Serialization/Packets/CounterQueryPacket.cs` | Id=18, 본문 0B struct. 완료 확인 용도를 `<remarks>`에 명시 |
++| `ServerLib/Core/Serialization/Packets/CounterValuePacket.cs` | Id=19, 본문 16B struct. 두 값 쌍의 비원자성 명시 |
++| `CounterServer/CounterServer.csproj` | .NET 10 콘솔, ServerLib 참조 |
++| `CounterServer/CounterState.cs` | Interlocked `long` 2개(`_value`·`_appliedOps`). 락 미사용 근거 주석 |
++| `CounterServer/CounterHandler.cs` | 헤더 검증·라우팅·상태 갱신·조회 응답. 증감/조회 경로별 완료·할당 특성 분리 문서화 |
++| `CounterServer/Program.cs` | 9300 루프백 리스너 와이어링. 종료 시 참고용 `Value` 출력(검증 판정 아님) |
++| `CounterClient/CounterClient.csproj` | .NET 10 콘솔, ServerLib 참조 |
++| `CounterClient/CounterScenario.cs` | `CounterSnapshot`·`CounterScenarioOptions`·`CounterScenarioResult`·`RunAsync` + 내부 `CounterConnection` |
++| `CounterClient/Program.cs` | 학습용 설정 상수, 실행기 호출, PASS/FAIL·종료 코드(0/1/2) |
++| `CounterExample.Tests/CounterExample.Tests.csproj` | xUnit. ServerLib·CounterServer·CounterClient 3개 ProjectReference |
++| `CounterExample.Tests/CounterPacketTests.cs` | ID·본문 길이(0/0/0/16)·프레임 길이(20)·경계값 왕복 |
++| `CounterExample.Tests/CounterStateTests.cs` | 실제 `CounterState` 동시 갱신 — 더하기만/빼기만/불균형/균형 |
++| `CounterExample.Tests/CounterEndToEndTests.cs` | 실소켓 E2E + 실패 경로. 실제 `CounterHandler`·`CounterScenario` 사용 |
++| `plan/contention_counter_0910.md` | 본 문서 |
++
++### 수정
++
++| 파일 | 내용 |
++|---|---|
++| `ClaudeCodeStudy.sln` | 신규 프로젝트 3개 등록 (구성 매핑 8프로젝트 × 12행 = 96행 확인) |
++| `CLAUDE.md` | 예제 목록에 CounterServer·CounterClient 2행, plan 문서 표에 1행 |
++| `AGENTS.md` | 위와 동일(양쪽 문서 대칭 유지) |
++
++---
++
++## 6. 빌드 검증
++
++```powershell
++dotnet build ClaudeCodeStudy.sln -c Release
++dotnet test  CounterExample.Tests/CounterExample.Tests.csproj -c Release --no-build
++dotnet test  ClaudeCodeStudy.sln -c Release --no-build
++```
++
++수동 콘솔 데모 (서버는 `Console.ReadKey`를 쓰므로 **자기 콘솔**이 필요하다 — stdin이 리다이렉트되면 즉시 예외로 죽는다):
++
++```powershell
++$srv = Start-Process CounterServer\bin\Release\net10.0\CounterServer.exe -PassThru
++CounterClient\bin\Release\net10.0\CounterClient.exe    # PASS + 종료 코드 0
++Stop-Process -Id $srv.Id -Force
++```
++
++### 실측 결과 (2026-09-10)
++
++| 항목 | 결과 |
++|---|---|
++| `dotnet build ClaudeCodeStudy.sln -c Release` | 오류 0, 경고 0 |
++| `dotnet test CounterExample.Tests` | **26 통과 / 0 실패** |
++| `dotnet test ClaudeCodeStudy.sln` (3회 반복) | **40 통과 / 0 실패** (기존 Echo 14 + 신규 26), 3회 모두 동일 |
++| 수동 콘솔 데모 | `PASS`, Value 2,000 / AppliedOps 14,000, **종료 코드 0** |
++| 8연결 × 1,750회(14,000패킷) 실행 시간 | 약 **0.12초** (루프백) — 타임아웃 상수 30초 대비 250배 여유 |
++
++---
++
++## 7. 검증의 한계 (명시적 기록)
++
++- **배리어의 필요성은 어떤 테스트로도 결정적으로 증명되지 않는다.** E2E는 "배리어 경로가 기대값을 산출한다"까지만 보장한다. 배리어를 제거했을 때의 결함은 비결정적 오값으로만 드러나고, 그것을 단언하려는 순간 flaky 테스트가 된다. 배리어의 필요성은 설계 근거(세션별 순차 처리)로만 성립한다.
++- 서버 종료 시 출력하는 `Value`는 정지 보장이 없어 **참고용**이다. 검증 판정은 클라이언트의 배리어 이후 최종 조회로만 내린다.
++- 실행 전제는 **새 서버 + 단일 클라이언트 실행**이다. 카운터는 서버 프로세스 수명 동안 누적되므로 재검증 시 서버를 재시작해야 한다(클라이언트가 시작 시점 스냅샷이 0이 아니면 경고를 출력한다).
++- 경합의 **실제 CPU 실행 겹침 정도**는 스케줄러에 좌우된다. 이 예제는 정확성을 보장할 뿐 특정 수준의 물리적 동시성을 보장하지 않는다.
++
++---
++
++## 8. 향후 확장 포인트
++
++| 후보 | 내용 | 비고 |
++|---|---|---|
++| **unsafe(비원자) 토글** | `CounterState`에 `_value++`(읽기-수정-쓰기 3단계) 경로를 옵션으로 추가해, 같은 부하에서 **최종값이 기대값보다 작아지는 것**을 눈으로 보여 준다 | cross-verify 조정 D2에서 이번 범위 밖으로 **기각**됨. 학습 효과는 크지만 비결정적 실패 시연이라 자동 테스트에 넣을 수 없다 |
++| 수량 필드 증감 | `Add(delta)` 형태로 확장 | 현재는 ±1 고정 |
++| 다중 카운터 | 카운터 ID로 샤딩해 false sharing / 캐시라인 패딩 실험 | 64B 패딩 유무 비교가 좋은 후속 학습 소재 |
++| 경합 계측 | 초당 처리량·지연 분포 측정 | 이번 범위는 정확성 시연이라 비범위였다 |
++| 대안 동시성 기법 비교 | `Interlocked` vs `lock` vs `Channel` 단일 소비자 직렬화의 처리량 비교 | 현업에서 실제로 갈리는 선택지 |
++
++---
++
++## 부록: 베이스라인 사실 교정
++
++교차 검증 과정에서 Codex 계획서(`10_codex_plan.md` 3행)가 *"미추적 `.claude/settings.local.json`이 있어 워킹트리가 완전히 깨끗하지는 않다"* 고 기술했으나, 해당 파일은 **전역 ignore 대상**이며 `git status --porcelain`은 빈 출력이었다. 기준 커밋 시점의 워킹트리는 깨끗했다. (조정 D14 / 최종 점검 F-4)

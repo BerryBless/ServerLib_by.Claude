@@ -1,0 +1,73 @@
+================================================================================
+32_test_results.txt — 리뷰 수정 라운드 재검증 결과 (구현자)
+대상 run: 20260910_163212_counter-server
+수정 지적: R-C1, R-C2, R-C3, R-C6(보고), R-C7
+게이트: 기존 통과 유지 + 신규 포함 전량 통과 + 실패 0
+================================================================================
+
+── 환경 ────────────────────────────────────────────────────────────────────
+OS: Windows 11, .NET 10, 구성 Release
+변경 파일: CounterServer/CounterHandler.cs, CounterClient/CounterScenario.cs,
+          CounterExample.Tests/CounterEndToEndTests.cs (제품 동작 변경 없음 — 테스트/주석/dead code)
+
+================================================================================
+[1] dotnet build ClaudeCodeStudy.sln -c Release --no-incremental  (클린 빌드)
+================================================================================
+빌드했습니다.
+    경고 10개
+    오류 0개
+
+  경고 10건 = 전부 CS0419(cref 모호 참조 'Start'), 모두 ServerLib/Interface/IServerListener.cs.
+  → 기존 경고이며 diff 밖 파일이다(이번 변경과 무관, 회귀 아님). 리뷰어 §4.3 정정과 일치.
+  (증분 빌드에서는 IServerListener.cs가 재컴파일되지 않아 '경고 0개'로 표시되므로,
+   클린 빌드 수치를 대표값으로 기록한다.)
+
+================================================================================
+[2] dotnet test CounterExample.Tests/CounterExample.Tests.csproj -c Release --no-build
+    (5회 반복 — 리뷰어의 사전 안정성 기준 5× 매칭; 신규 테스트의 타이밍 구조 안정성 확인)
+================================================================================
+===== RUN 1 =====
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+===== RUN 2 =====
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+===== RUN 3 =====
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+===== RUN 4 =====
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+===== RUN 5 =====
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+  전 5회 27/27 통과, 실패 0, flaky 미관측.
+  테스트 수: 26 → 27 (R-C2의 Handler_DirectCall_RejectsFramesUnreachableViaTransport 1개 신규 추가).
+
+── 수정 대상 2개 테스트 단독 실행(격리 확인) ─────────────────────────────────
+명령: dotnet test ... --filter
+  "FullyQualifiedName~Handler_DirectCall_RejectsFramesUnreachableViaTransport|
+   FullyQualifiedName~Scenario_UnresponsiveServer_TimesOutAndCleansUp"
+통과!  - 실패:     0, 통과:     2, 건너뜀:     0, 전체:     2, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+  주: 개편된 test 8(Scenario_UnresponsiveServer_TimesOutAndCleansUp)은 3중 단언으로 경로를 고정한다.
+    ① TimeoutException.Message가 RunAsync 고유 문구("경합 카운터 시나리오가 기한")를 포함 →
+       RunAsync 내부 기한 경로(배리어 취소 → ThrowIfDeadlineAsync)가 낸 것이지, RunAsync가 매달려
+       테스트의 15s WaitAsync 안전망(프레임워크 기본 메시지)이 낸 것이 아님을 판별.
+    ② 서버 수신 조회 수 >= 1 + Connections(=3) → 워커가 증감 전량 송신 후 배리어 조회까지 보냈다는 직접 증거.
+       (기존 테스트였다면 queryCount=1에서 막혀 실패 — R-C1 공백이 닫혔음을 실증.)
+    ③ OnClientDisconnected == Connections → 정리 누락 없음.
+  세 단언이 모두 통과 = "워커 배리어 도달 → 기한이 그 지점에서 취소 → 전 연결 정리"가 성립.
+
+================================================================================
+[3] dotnet test ClaudeCodeStudy.sln -c Release --no-build  (전체 솔루션)
+================================================================================
+통과!  - 실패:     0, 통과:    14, 건너뜀:     0, 전체:    14, 기간: 202 ms - EchoExample.Tests.dll (net10.0)
+통과!  - 실패:     0, 통과:    27, 건너뜀:     0, 전체:    27, 기간: 1 s - CounterExample.Tests.dll (net10.0)
+
+  합계: 41/41 통과, 실패 0, 건너뜀 0.
+  기존 EchoExample.Tests 14/14 유지(회귀 없음).
+
+================================================================================
+게이트 판정: PASS
+  - 기존 통과 유지: O (EchoExample 14/14, Counter 기존 26개 전부 유지)
+  - 신규 포함 전량 통과: O (신규 R-C2 테스트 포함 27/27)
+  - 실패 0: O
+  - 빌드 0오류: O
+================================================================================

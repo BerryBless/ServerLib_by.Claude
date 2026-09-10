@@ -1,0 +1,10 @@
+{
+  "status": "success",
+  "exit_code": 0,
+  "duration_sec": 152.3,
+  "out_file": "E:\\project\\ClaudeCodeStudy\\_workspace\\cross\\20260910_163212_counter-server\\30_codex_review_r2.md",
+  "out_bytes": 3355,
+  "started_at": "2026-09-10T19:53:38.3860855+09:00",
+  "prompt_file": "E:\\project\\ClaudeCodeStudy\\_workspace\\cross\\20260910_163212_counter-server\\p_review_r2.md",
+  "sandbox": "read-only"
+}
