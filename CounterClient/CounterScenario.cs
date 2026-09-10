@@ -49,7 +49,13 @@ public sealed class CounterScenarioOptions
 
     /// <summary>설정값의 유효성을 검사합니다.</summary>
     /// <exception cref="ArgumentOutOfRangeException">값이 유효 범위를 벗어났을 때.</exception>
-    /// <remarks><b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 정상 경로 무할당.</remarks>
+    /// <remarks>
+    /// <b>[Blocking]</b> Non-blocking. <b>[Memory]</b> 정상 경로 무할당.
+    /// <br/><b>[더하기+빼기 합계 규칙]</b> 합계 <b>0(연산이 전혀 없는 빈 실행)은 유효</b>합니다 — 이때 최종값·적용 연산 수가
+    /// 모두 0이고 배리어·최종 조회 경로는 그대로 실행됩니다. <b>음수만 거부</b>합니다. 각 값은 위에서 이미 음수를 거부하므로
+    /// 합계가 음수가 되는 경우는 <c>int</c> 덧셈 오버플로뿐이며, 이 검사가 그 오버플로를 <c>checked</c> 곱셈(<c>OverflowException</c>)
+    /// 이전에 <see cref="ArgumentOutOfRangeException"/>으로 잡아 예외 계약을 지킵니다.
+    /// </remarks>
     public void Validate()
     {
         ArgumentException.ThrowIfNullOrEmpty(Host);
@@ -58,8 +64,11 @@ public sealed class CounterScenarioOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(ConnectionCount, 1);
         ArgumentOutOfRangeException.ThrowIfNegative(IncrementsPerConnection);
         ArgumentOutOfRangeException.ThrowIfNegative(DecrementsPerConnection);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(
-            IncrementsPerConnection + DecrementsPerConnection, 0, "IncrementsPerConnection + DecrementsPerConnection");
+        // 합계 0(빈 실행)은 허용하고 음수만 거부한다. 두 값 모두 위에서 음수를 배제했으므로, 합계가 음수가 되는 유일한 경로는
+        // int 덧셈 오버플로다. ThrowIfNegative로 그 오버플로를 잡아, RunAsync의 checked 곱셈(OverflowException)에 도달하기 전에
+        // API 계약대로 ArgumentOutOfRangeException을 던진다.
+        ArgumentOutOfRangeException.ThrowIfNegative(
+            IncrementsPerConnection + DecrementsPerConnection, "IncrementsPerConnection + DecrementsPerConnection");
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(Timeout, TimeSpan.Zero);
     }
 }

@@ -29,10 +29,14 @@ namespace CounterServer;
 /// </description></item>
 /// <item><description>
 /// <b>Blocking / Memory — 조회 응답 경로(Id 18):</b> <c>PacketSendExtensions.SendAsync</c>로 위임합니다.
-/// 커널 송신 버퍼에 여유가 있어 <b>송신이 동기 완료</b>하면 대여 버퍼를 즉시 반납하고 완료된 ValueTask를 반환합니다(무할당).
-/// 버퍼가 포화되어 <b>송신이 미완료</b>면 비동기 완료로 전환되며 이때만 <b>상태머신 1개가 조건부 할당</b>됩니다
-/// (<c>PacketSendExtensions.cs:78-88</c>의 <c>CompleteAsync</c>/<c>AwaitAndReturnAsync</c> 분기).
-/// 어느 경로든 <c>finally</c>에서 <see cref="System.Buffers.ArrayPool{T}"/> 버퍼 반납이 보장됩니다.
+/// 이 경로는 <see cref="System.Buffers.ArrayPool{T}"/>에서 송신 버퍼를 <b>대여</b>합니다.
+/// <b>풀에 재사용 가능한 버퍼가 있고</b> 커널 송신 버퍼에 여유가 있어 <b>송신이 동기 완료</b>하면
+/// 추가 힙 할당 없이 대여 버퍼를 즉시 반납하고 완료된 ValueTask를 반환할 수 있습니다.
+/// 다만 <c>ArrayPool.Rent</c>는 <b>해당 버킷이 비어 있으면 새 배열을 할당</b>하므로 동기 경로라도 무할당이 <b>보장되지는 않습니다</b>.
+/// 커널 버퍼 포화로 <b>송신이 미완료</b>면 비동기 완료로 전환되어 <c>AwaitAndReturnAsync</c> 상태머신과
+/// 하위 <c>SocketPipelineSession.SendAsync</c>/<c>SendAllAsync</c>의 비동기 대기 경로에서 <b>추가 할당이 발생할 수 있습니다</b>.
+/// 이 경로 전체의 할당 개수는 단정하지 않습니다. 어느 경로든 <c>finally</c>에서 대여 버퍼 반납은 보장됩니다
+/// (<c>PacketSendExtensions.cs:78-92</c>의 <c>CompleteAsync</c>/<c>AwaitAndReturnAsync</c> 분기).
 /// </description></item>
 /// <item><description>
 /// <b>Memory Policy — <c>data</c> 소유권:</b> <c>ReadOnlyMemory&lt;byte&gt;</c>는 세션 내부 수신 버퍼의 슬라이스 뷰이며
@@ -125,8 +129,10 @@ public sealed class CounterHandler
     /// <param name="session">응답 대상 세션입니다.</param>
     /// <returns>송신 완료 시 완료되는 <see cref="ValueTask"/>입니다.</returns>
     /// <remarks>
-    /// <b>[Blocking / Memory]</b> 송신이 동기 완료하면 무할당·즉시 반환, 미완료면 상태머신 1개가 조건부 할당됩니다
-    /// (<c>PacketSendExtensions.cs:78-88</c>).
+    /// <b>[Blocking / Memory]</b> 응답 버퍼를 <see cref="System.Buffers.ArrayPool{T}"/>에서 대여합니다. 풀에 재사용 버퍼가 있고
+    /// 송신이 동기 완료하면 추가 할당 없이 즉시 반환할 수 있으나, 풀 버킷이 비었으면 <c>Rent</c>가 새 배열을 할당하고,
+    /// 송신이 미완료(비동기 완료)면 상태머신·하위 송신 경로에서 추가 할당이 발생할 수 있습니다. 이 경로의 총 할당 개수는 단정하지 않습니다
+    /// (<c>PacketSendExtensions.cs:78-92</c>). 대여 버퍼 반납은 동기·비동기 어느 경로든 보장됩니다.
     /// <br/><b>[두 값의 비원자성]</b> 아래 두 번의 <c>Interlocked</c> 읽기 <b>사이</b>에 다른 세션이 갱신할 수 있으므로,
     /// 이 응답의 <c>Value</c>·<c>AppliedOps</c>는 진행 중에는 서로 다른 시점의 스냅샷일 수 있습니다.
     /// 두 값을 함께 단언하는 것은 모든 증감이 끝난 정지 상태 조회에서만 유효합니다.
@@ -144,10 +150,12 @@ public sealed class CounterHandler
         };
 
         // session.SendAsync<CounterValuePacket>(packet): PacketSendExtensions 확장 메서드.
-        //   ① ArrayPool<byte>.Shared.Rent(4+16): TLS 슬롯 → 공유 풀 순서로 버퍼를 대여(new byte[] 회피).
-        //   ② Serialize: 대여 버퍼에 헤더(4B)+본문(16B)을 SpanWriter(ref struct, 스택)로 기록 — Zero-allocation.
+        //   ① ArrayPool<byte>.Shared.Rent(4+16): TLS 슬롯 → 공유 풀 순서로 버퍼를 대여. 해당 버킷에 재사용 버퍼가 있으면
+        //      new byte[]를 피하지만, 버킷이 비어 있으면 Rent가 새 배열을 할당한다(요청보다 큰 크기를 줄 수도 있다) → 무할당 미보장.
+        //   ② Serialize: 대여 버퍼에 헤더(4B)+본문(16B)을 SpanWriter(ref struct, 스택)로 기록 — 이 단계 자체는 힙 할당이 없다.
         //   ③ ISession.SendAsync: _socket.SendAsync()로 커널 송신 버퍼에 직접 기록(Non-blocking, 포화 시에만 비동기 대기).
-        //   ④ 동기 완료 시 버퍼 즉시 반납(무할당), 비동기 완료 시 상태머신 1개 할당 후 finally에서 반납.
+        //   ④ 동기 완료 시 버퍼 즉시 반납, 비동기 완료 시 AwaitAndReturnAsync 상태머신과 하위 송신 경로에서 추가 할당이 생길 수 있고
+        //      어느 경로든 finally에서 반납이 보장된다. 이 경로의 총 할당 개수는 단정하지 않는다.
         // struct 패킷이므로 T가 값 타입으로 특수화되어 박싱이 없다.
         return session.SendAsync(response);
     }

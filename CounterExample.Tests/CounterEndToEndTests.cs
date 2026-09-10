@@ -53,9 +53,11 @@ public class CounterEndToEndTests
     private const int ScenarioConnections = 8;
     private const int ScenarioIncrements = 1_000;
     private const int ScenarioDecrements = 750;
-    // 총 연산 0 시나리오: 더하기 = 빼기. Value는 0이지만 AppliedOps는 2배로 쌓여야 한다.
+    // 순증감 0(balanced) 시나리오: 더하기 = 빼기. Value는 0이지만 AppliedOps는 2배로 쌓여야 한다(연산은 실제로 발생).
     private const int BalancedConnections = 4;
     private const int BalancedOpsEachWay = 500;
+    // 총 연산 0(빈 실행) 시나리오: 더하기·빼기 모두 0회. 연결·배리어·최종 조회는 거치되 증감을 전혀 보내지 않는다.
+    private const int EmptyRunConnections = 8;
     // 단일 연결 시나리오.
     private const int SingleConnectionIncrements = 5;
     private const int SingleConnectionDecrements = 2;
@@ -241,7 +243,7 @@ public class CounterEndToEndTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // 테스트 4 — 총 연산 0 (상쇄 은폐 방지)
+    // 테스트 4 — 순증감 0(balanced): 상쇄로 연산 발생을 은폐하지 않는다
     // ═════════════════════════════════════════════════════════════════════════
 
     /// <summary>
@@ -279,17 +281,88 @@ public class CounterEndToEndTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════
+    // 테스트 4b — 총 연산 0(빈 실행): 증감을 하나도 보내지 않아도 배리어·최종 조회는 통과
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 더하기·빼기를 <b>모두 0회</b>로 설정한 빈 실행에서도 <see cref="CounterScenario.RunAsync"/>가
+    /// 연결·배리어·최종 조회 경로를 그대로 거쳐 <c>Value=0, AppliedOps=0, Passed=true</c>를 산출하는지 검증합니다.
+    /// </summary>
+    /// <remarks>
+    /// <b>[balanced 테스트와의 차이]</b> balanced(순증감 0)는 <b>연산이 실제로 발생</b>해 <c>AppliedOps</c>가 쌓이는 반면,
+    /// 이 빈 실행은 <b>연산 자체가 0</b>이라 모든 수치가 0입니다. 그래서 이 테스트에서 0은 "결함으로 아무것도 안 함"과
+    /// 구별되지 않습니다 — 그 은폐를 깨기 위해 <b>서버가 실제로 조회를 받았는지</b>(기준값 1 + 연결 수만큼의 배리어 + 최종 1
+    /// = <c>연결 수 + 2</c>회 이상)를 서버 측 수신 카운터로 교차 단언합니다. 이 단언이 "워커가 배리어 경로를 실제로 밟았다"를
+    /// 보장해, 빈 실행이 <b>빈 경로 통과</b>로 퇴화하지 않게 합니다.
+    /// <br/>이 시나리오는 <c>Validate()</c>가 합계 0을 허용하도록 완화됐기에 실행 가능합니다.
+    /// </remarks>
+    [Fact]
+    public async Task Scenario_ZeroOperations_StillTraversesBarrierAndReportsZero()
+    {
+        int port = GetFreePort();
+        var state = new CounterState();
+        var handler = new CounterHandler(state);
+
+        IServerListener listener = ServerNet.CreateListener();
+        // long: Interlocked 대상 카운터. 여러 세션의 IO 스레드가 동시에 증가시키므로 원자 연산이 필요하다.
+        long queryCount = 0;
+        listener.OnReceived = (ISession session, ReadOnlyMemory<byte> data) =>
+        {
+            // TryParseHeader: 앞 4B를 무할당으로 해석해 조회 패킷만 계수한다(증감은 이 실행에서 0회이므로 도달하지 않는다).
+            if (PacketPool.TryParseHeader(data.Span, out ushort packetId, out _)
+                && packetId == CounterQueryPacket.Id)
+            {
+                Interlocked.Increment(ref queryCount);
+            }
+            return handler.HandleAsync(session, data);
+        };
+        listener.Start(port, IPAddress.Loopback);
+
+        try
+        {
+            CounterScenarioResult result = await CounterScenario.RunAsync(
+                OptionsFor(port, EmptyRunConnections, increments: 0, decrements: 0));
+
+            // 기대값 계산이 실제로 0으로 확정되는지 먼저 못 박는다(기대=실측만 비교하면 둘 다 우연히 0일 수 있다).
+            Assert.Equal(0L, result.ExpectedValue);
+            Assert.Equal(0L, result.ExpectedAppliedOps);
+            Assert.Equal(new CounterSnapshot(0, 0), result.InitialSnapshot);
+
+            Assert.True(result.Passed, $"빈 실행 FAIL: Value {result.ActualValue}, AppliedOps {result.ActualAppliedOps}");
+            Assert.Equal(0L, result.ActualValue);
+            Assert.Equal(0L, result.ActualAppliedOps);
+
+            // 서버 측 상태도 0이어야 한다(증감이 한 번도 적용되지 않았음).
+            Assert.Equal(0L, state.Value);
+            Assert.Equal(0L, state.AppliedOps);
+
+            // 핵심: 워커가 배리어를 실제로 밟았는지 서버 수신 조회 수로 확인한다.
+            // 기준값 조회 1 + 연결 수만큼의 배리어 조회 + 최종 조회 1 = 연결 수 + 2회 이상 도달해야 한다.
+            Assert.True(Interlocked.Read(ref queryCount) >= EmptyRunConnections + 2,
+                $"빈 실행이 배리어 경로를 밟지 않았습니다(서버 수신 조회 {Interlocked.Read(ref queryCount)}회, 기대 ≥ {EmptyRunConnections + 2}회).");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
     // 테스트 5 — 잘못된 본문 길이는 상태를 바꾸지 않는다
     // ═════════════════════════════════════════════════════════════════════════
 
     /// <summary>
     /// 헤더가 <c>Id=3</c>인데 본문이 0B가 아닌 프레임은 거부되고,
     /// <c>Value</c>와 <c>AppliedOps</c>가 <b>둘 다</b> 변하지 않는지 검증합니다.
-    /// 이어서 다른 연결은 정상 동작해야 합니다(오류는 해당 세션에만 국한).
+    /// 오류는 <b>해당 세션에만 국한</b>되어, <b>오류 발생 전부터 열려 있던</b> 정상 연결이 오류 이후에도 계속 동작해야 합니다.
     /// </summary>
     /// <remarks>
     /// <b>[배리어]</b> 프레임을 보낸 직후 단언하면 서버가 아직 처리하기 전일 수 있어 테스트가 무의미하게 통과합니다.
     /// 서버의 <c>OnClientError</c> 신호를 기다린 뒤에야 상태를 단언합니다.
+    /// <br/><b>[정상 연결을 오류 전에 연다]</b> 정상 연결을 오류 <b>후에</b> 새로 만들면 "새 연결 수립은 되는가"만 볼 뿐,
+    /// <b>기존에 열려 있던 다른 연결이 이웃 세션의 오류 종료에 휩쓸려 끊기는 회귀</b>는 포착하지 못합니다. 그래서 정상 연결을
+    /// 오류 주입 <b>전에</b> 열어 정상 왕복까지 확인해 두고, 이웃 세션이 오류로 종료된 뒤에도 <b>같은 연결</b>로 증감·조회가
+    /// 성공하는지 단언합니다.
     /// </remarks>
     [Fact]
     public async Task MalformedBodyLength_IsRejected_AndLeavesStateUntouched()
@@ -300,6 +373,11 @@ public class CounterEndToEndTests
 
         try
         {
+            // 오류 주입 전에 정상 연결을 먼저 열고, 정상 왕복이 된다는 것을 확인해 둔다(기준선).
+            await using var healthy = new RawCounterClient();
+            await healthy.ConnectAsync(port);
+            Assert.Equal(new CounterSnapshot(0, 0), await healthy.QueryAsync());
+
             await using (var bad = new RawCounterClient())
             {
                 await bad.ConnectAsync(port);
@@ -315,9 +393,7 @@ public class CounterEndToEndTests
             Assert.Equal(0L, state.Value);
             Assert.Equal(0L, state.AppliedOps);
 
-            // 오류로 한 세션이 끊긴 뒤에도 새 연결은 정상 동작해야 한다.
-            await using var healthy = new RawCounterClient();
-            await healthy.ConnectAsync(port);
+            // 이웃 세션이 오류로 끊긴 뒤에도, 오류 전부터 열려 있던 바로 그 연결이 계속 동작해야 한다.
             await healthy.SendIncrementAsync();
             CounterSnapshot snapshot = await healthy.QueryAsync();
 
@@ -402,10 +478,34 @@ public class CounterEndToEndTests
         IServerListener listener = ServerNet.CreateListener();
         // long: Interlocked 대상 카운터. 여러 세션의 IO 스레드가 동시에 증가시키므로 원자 연산이 필요하다.
         long queryCount = 0;
-        // Stop()을 정확히 1회만 실행하기 위한 핸들. Stop()은 활성 세션을 순회하며 동기 Dispose하므로
-        // 두 스레드가 동시에 들어가면 이중 Dispose로 ObjectDisposedException이 날 수 있다.
-        // 결정성은 "응답을 드롭한다"에서 나오고 Stop()은 fail-fast 단언을 의미 있게 만드는 역할뿐이므로 1회면 충분하다.
-        Task? stopTask = null;
+
+        // ── Stop()을 정확히 1회만 실행하는 게이트 (R-C6) ──────────────────────────
+        // Stop()은 활성 세션을 순회하며 동기 Dispose하므로 두 스레드가 동시에 들어가면 이중 Dispose로
+        // ObjectDisposedException이 날 수 있다. 예전 구조는 콜백이 쓴 stopTask 필드를 finally가 동기화 없이 읽어,
+        // 가시성 지연으로 null을 보고 Stop()을 한 번 더 호출할 수 있었다(이중 Stop 레이스).
+        // stopGate(Interlocked)로 "정확히 한 호출자만 Stop을 시작"하고, stopCompleted(캡처된 지역 TCS)로 그 완료를
+        // 콜백·finally 어느 쪽이든 함께 기다리게 해 레이스와 이중 Dispose를 모두 제거한다.
+        int stopGate = 0;
+        // TaskCompletionSource: IO 스레드(콜백)가 시작한 Stop의 완료를 테스트 스레드(finally)가 관측하는 신호기.
+        // RunContinuationsAsynchronously: 완료 시 대기자가 Stop 실행 스레드에서 인라인 실행되지 않게 한다.
+        var stopCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // BeginStopOnce: 첫 호출자만 Stop()을 별도 스레드에서 1회 시작하고, 모든 호출자는 그 완료 Task를 받는다.
+        // Task.Run으로 분리하는 이유: 지금 콜백을 실행 중인 세션 자신을 인라인 Dispose하면 자기 완료를 기다리는 교착이 생긴다.
+        Task BeginStopOnce()
+        {
+            if (Interlocked.Exchange(ref stopGate, 1) == 0)
+            {
+                _ = Task.Run(() =>
+                {
+                    // Stop() 예외를 삼키지 않는다 — 삼키면 리스너 teardown 버그가 이 finally에서만 드러날 유일한 기회를 잃는다.
+                    try { listener.Stop(); stopCompleted.TrySetResult(); }
+                    catch (Exception ex) { stopCompleted.TrySetException(ex); }
+                });
+            }
+            return stopCompleted.Task;
+        }
+
         listener.OnReceived = (ISession session, ReadOnlyMemory<byte> data) =>
         {
             // TryParseHeader: 앞 4B를 무할당으로 해석해 조회 패킷만 골라낸다.
@@ -415,9 +515,8 @@ public class CounterEndToEndTests
                 long n = Interlocked.Increment(ref queryCount);
                 if (n == 2)
                 {
-                    // Task.Run으로 분리: 지금 이 콜백을 실행 중인 세션 자신을 인라인으로 Dispose하면
-                    // 자기 자신의 완료를 기다리는 교착이 생길 수 있다. 정확히 1회만 스케줄한다.
-                    stopTask = Task.Run(listener.Stop);
+                    // 2회차 조회(첫 배리어 조회) 도달 시 서버를 내린다. 게이트가 정확히 1회만 시작하도록 보장한다.
+                    _ = BeginStopOnce();
                 }
                 if (n >= 2)
                 {
@@ -442,7 +541,7 @@ public class CounterEndToEndTests
                 Timeout = TimeSpan.FromSeconds(RunTimeoutSeconds),
             };
 
-            // 값 불일치는 Passed=false로, 통신 실패는 예외로 온다. 어느 쪽이든 PASS가 아니어야 한다.
+            // 서버가 중도 종료되면 연결이 끊겨 통신 실패(예외)로 표면화된다. PASS 반환도, 무응답 hang도 아니어야 한다.
             Exception? captured = null;
             CounterScenarioResult? result = null;
             try
@@ -455,18 +554,28 @@ public class CounterEndToEndTests
             }
             stopwatch.Stop();
 
-            Assert.True(captured is not null || result?.Passed == false,
-                "서버가 중도 종료됐는데도 시나리오가 PASS를 반환했습니다.");
+            // ① 종료 트리거가 실제로 실행됐다: 서버가 2회차(배리어) 조회를 받아 Stop을 걸었다.
+            //    이 단언이 없으면 연결·기준값 조회 단계에서 먼저 실패해도(종료 경로 미실행) 테스트가 통과할 수 있다.
+            Assert.True(Interlocked.Read(ref queryCount) >= 2,
+                $"서버 종료 트리거(2회차 조회)에 도달하지 못했습니다(서버 수신 조회 {Interlocked.Read(ref queryCount)}회).");
 
-            // 연결 해제 시 대기자를 즉시 실패시키는 배선이 있으면 기한(20초)을 기다리지 않는다.
+            // ② 종료 이후 통신 실패로 끝났다: 결과를 반환하지 않고 예외로 표면화됐다(PASS 은폐 불가).
+            Assert.NotNull(captured);
+
+            // ③ 그 실패가 '기한까지 매달린 hang'이 아니라 '연결 끊김에 대한 fast-fail'이다.
+            //    TimeoutException이면 연결 해제 시 대기자를 실패시키는 배선이 끊긴 것이므로 명확히 구분해 거른다.
+            Assert.False(captured is TimeoutException,
+                $"서버 종료가 fast-fail이 아니라 기한 만료(TimeoutException)로 끝났습니다: {captured}");
+
+            // ④ 연결 해제 배선이 동작하면 기한(20초)을 기다리지 않고 곧바로 끝난다.
             Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(FailFastBudgetSeconds),
                 $"서버 종료 후 시나리오가 기한까지 매달렸습니다({stopwatch.Elapsed}). 연결 해제 시 조회 대기자를 실패시키는 배선을 확인하십시오.");
         }
         finally
         {
-            // 콜백이 스케줄한 Stop()이 끝난 뒤에만 정리한다. 두 Stop()이 겹치면 세션 이중 Dispose가 될 수 있다.
-            if (stopTask is not null) await stopTask;
-            else listener.Stop();
+            // Stop을 아직 아무도 시작하지 않았으면(예: 트리거 도달 전 실패) 여기서 시작하고, 이미 시작됐으면
+            // 그 완료를 함께 기다린다. 게이트 덕분에 Stop()은 어느 경로에서도 정확히 1회만 실행된다.
+            await BeginStopOnce();
         }
     }
 
