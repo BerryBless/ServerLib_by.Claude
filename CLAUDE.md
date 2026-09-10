@@ -163,7 +163,7 @@ private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 
 **목표:** Plan 단계와 최종 코드 리뷰 단계에서 Claude와 실제 Codex CLI가 독립 판단 → 상호 검증 → 근거 기반 조정을 거치는 개발 파이프라인. Codex는 검증 전담(read-only), 구현은 Claude 전담.
 
-**트리거:** 교차 검증 개발, 교차 검증으로 구현, cross-verify, Codex랑 같이 구현, 크로스 체크 개발 요청 시 `cross-verify` 스킬을 사용하라. 단발 Codex 질문·단독 리뷰는 `codex` 스킬.
+**트리거:** 요청에 '코덱스'/'Codex' 키워드가 명시된 교차 검증 요청(예: 코덱스 교차 검증으로 구현, Codex랑 같이 구현)에만 `cross-verify` 스킬을 사용하라. **코덱스/Codex 언급이 없는 '교차 검증'·'더블 체크' 요청에는 실행 금지.** 단발 Codex 질문·단독 리뷰는 `codex` 스킬.
 
 **주의:** Codex 미실행 상태에서 "교차 검증 완료" 보고 금지. Codex 산출물은 `*.meta.json`(status=success) 증빙 필수. `cross-verify`·`codex` 스킬은 Claude 전용이므로 `.agents/skills/` 미러에서 제외한다(Codex 자기 호출 재귀 방지).
 
@@ -171,6 +171,7 @@ private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
 | 2026-09-10 | 초기 구성 | cross-verify 스킬 + cross-planner/cross-implementer/cross-reviewer/codex-adapter 에이전트 | Plan·리뷰 교차 검증 파이프라인 구축 |
+| 2026-09-10 | 트리거 조건 강화 — 코덱스/Codex 키워드 필수 | cross-verify description·CLAUDE.md | 키워드 없는 일반 검증 요청에 고비용 파이프라인이 오발동하지 않도록 사용자 요청 |
 
 ---
 
